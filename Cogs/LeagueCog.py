@@ -18,54 +18,53 @@ from datetime import datetime, timezone, timedelta
 import pytesseract
 from discord import ui, SelectOption
 from discord.interactions import Interaction
-import sqlite3
-from discord.ext import commands
 
 logger = logging.getLogger('bot')
 
 class OfferView(ui.View):
-    def __init__(self, offer_id: int, manager_id: int, is_clause_payment: bool = False):
+    def __init__(self, offer_id: int, manager_id: int, guild_id: int, is_clause_payment: bool = False):
         super().__init__(timeout=None)
         self.offer_id = offer_id
         self.manager_id = manager_id
+        self.guild_id = guild_id
         self.is_clause_payment = is_clause_payment
 
     @ui.button(label="✅ Aceptar", style=discord.ButtonStyle.green)
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
         if await check_ban(interaction, interaction.user.id):
             return
-        offer = db.get_offer(self.offer_id)
+        offer = db.get_offer(self.guild_id, self.offer_id)
         if not offer or offer['status'] not in ['pending', 'bought_clause']:
             await interaction.response.edit_message(embed=error("Oferta no válida o ya procesada."), view=None)
             return
         if self.is_clause_payment:
-            if db.accept_clause_payment(self.offer_id):
+            if db.accept_clause_payment(self.guild_id, self.offer_id):
                 await interaction.response.edit_message(embed=success("Transferencia por cláusula aceptada."), view=None)
                 manager = interaction.client.get_user(self.manager_id)
                 if manager:
-                    await manager.send(embed=info(f"El jugador {interaction.user.name} aceptó la transferencia por cláusula #{self.offer_id}."))
+                    await manager.send(embed=info(f"El jugador {interaction.user.name} aceptó la transferencia por cláusula #{self.offer_id} en el servidor {interaction.guild.name}."))
             else:
                 await interaction.response.edit_message(embed=error("Fondos insuficientes."), view=None)
         else:
-            db.accept_offer(self.offer_id)
+            db.accept_offer(self.guild_id, self.offer_id)
             await interaction.response.edit_message(embed=success("Oferta aceptada."), view=None)
             manager = interaction.client.get_user(self.manager_id)
             if manager:
-                await manager.send(embed=info(f"El jugador {interaction.user.name} aceptó tu oferta #{self.offer_id}."))
+                await manager.send(embed=info(f"El jugador {interaction.user.name} aceptó tu oferta #{self.offer_id} en el servidor {interaction.guild.name}."))
 
     @ui.button(label="❌ Rechazar", style=discord.ButtonStyle.red)
     async def reject(self, interaction: discord.Interaction, button: ui.Button):
         if await check_ban(interaction, interaction.user.id):
             return
-        offer = db.get_offer(self.offer_id)
+        offer = db.get_offer(self.guild_id, self.offer_id)
         if not offer or offer['status'] not in ['pending', 'bought_clause']:
             await interaction.response.edit_message(embed=error("Oferta no válida o ya procesada."), view=None)
             return
-        db.reject_offer(self.offer_id)
+        db.reject_offer(self.guild_id, self.offer_id)
         await interaction.response.edit_message(embed=info("Oferta rechazada."), view=None)
         manager = interaction.client.get_user(self.manager_id)
         if manager:
-            await manager.send(embed=info(f"El jugador {interaction.user.name} rechazó tu oferta #{self.offer_id}."))
+            await manager.send(embed=info(f"El jugador {interaction.user.name} rechazó tu oferta #{self.offer_id} en el servidor {interaction.guild.name}."))
 
     async def on_timeout(self):
         try:
@@ -78,11 +77,12 @@ class OfferView(ui.View):
         await interaction.response.send_message(embed=error("Ocurrió un error."), ephemeral=True)
 
 class TeamBookView(ui.View):
-    def __init__(self, teams: list, user_id: int, bot: commands.Bot):
+    def __init__(self, teams: list, user_id: int, bot: commands.Bot, guild_id: int):
         super().__init__(timeout=300)
         self.teams = teams
         self.user_id = user_id
         self.bot = bot
+        self.guild_id = guild_id
         self.current_page = 0
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -104,12 +104,12 @@ class TeamBookView(ui.View):
                 team['manager_id']) if team['manager_id'] else None
             embed.add_field(
                 name="Manager", value=manager.mention if manager else "Sin manager", inline=False)
-            captains = db.get_captains(team['id'])
+            captains = db.get_captains(self.guild_id, team['id'])
             captain_mentions = [self.bot.get_user(
                 c).mention for c in captains if self.bot.get_user(c)]
             embed.add_field(name="Capitanes", value=", ".join(
                 captain_mentions) or "Sin capitanes", inline=False)
-            players = db.get_players_by_team(team['id'])
+            players = db.get_players_by_team(self.guild_id, team['id'])
             embed.add_field(name="Jugadores", value="\n".join(
                 [f"{p['name']}: {p['contract_details'] or 'Sin contrato'}" for p in players]) or "Ninguno", inline=False)
             embed.set_footer(
@@ -140,17 +140,19 @@ class TeamBookView(ui.View):
             pass
 
 class EliminarAmistosoView(ui.View):
-    def __init__(self, amistosos, bot):
+    def __init__(self, amistosos, bot, guild_id: int):
         super().__init__(timeout=60)
         self.bot = bot
-        self.add_item(EliminarAmistosoSelect(amistosos, bot))
+        self.guild_id = guild_id
+        self.add_item(EliminarAmistosoSelect(amistosos, bot, guild_id))
 
 class EliminarAmistosoSelect(ui.Select):
-    def __init__(self, amistosos, bot):
+    def __init__(self, amistosos, bot, guild_id: int):
         self.bot = bot
+        self.guild_id = guild_id
         options = [
             SelectOption(
-                label=f"{db.get_team_by_id(a['team1_id'])['name']} vs {db.get_team_by_id(a['team2_id'])['name']} ({a['hora']})",
+                label=f"{db.get_team_by_id(self.guild_id, a['team1_id'])['name']} vs {db.get_team_by_id(self.guild_id, a['team2_id'])['name']} ({a['hora']})",
                 value=str(a['id'])
             ) for a in amistosos
         ]
@@ -165,28 +167,28 @@ class EliminarAmistosoSelect(ui.Select):
             return
 
         amistoso_id = int(self.values[0])
-        amistoso = db.get_amistoso_by_id(amistoso_id)
+        amistoso = db.get_amistoso_by_id(self.guild_id, amistoso_id)
         if not amistoso:
             await interaction.response.send_message(embed=error("Amistoso no encontrado."), ephemeral=True)
             return
 
-        manager_team = db.get_team_by_manager(interaction.user.id)
-        captain_team = db.get_team_by_captain(interaction.user.id)
+        manager_team = db.get_team_by_manager(self.guild_id, interaction.user.id)
+        captain_team = db.get_team_by_captain(self.guild_id, interaction.user.id)
         team = manager_team or captain_team
         if not team or (team['id'] != amistoso['team1_id'] and team['id'] != amistoso['team2_id']):
             await interaction.response.send_message(embed=error("No eres manager ni capitán de los equipos involucrados."), ephemeral=True)
             return
 
-        db.delete_amistoso(amistoso_id)
+        db.delete_amistoso(self.guild_id, amistoso_id)
         logger.info(
             f"Amistoso ID {amistoso_id} eliminado por {interaction.user.name} ({interaction.user.id})")
 
-        team1 = db.get_team_by_id(amistoso['team1_id'])
-        team2 = db.get_team_by_id(amistoso['team2_id'])
+        team1 = db.get_team_by_id(self.guild_id, amistoso['team1_id'])
+        team2 = db.get_team_by_id(self.guild_id, amistoso['team2_id'])
         recipients = []
         for t in [team1, team2]:
             manager_id = t['manager_id']
-            captains = db.get_captains(t['id'])
+            captains = db.get_captains(self.guild_id, t['id'])
             if manager_id:
                 recipients.append(manager_id)
             recipients.extend(captains)
@@ -196,7 +198,7 @@ class EliminarAmistosoSelect(ui.Select):
                 recipient = self.bot.get_user(recipient_id)
                 if recipient:
                     try:
-                        await recipient.send(embed=info(f"El amistoso entre {team1['name']} y {team2['name']} a las {amistoso['hora']} fue eliminado por {interaction.user.name}."))
+                        await recipient.send(embed=info(f"El amistoso entre {team1['name']} y {team2['name']} a las {amistoso['hora']} fue eliminado por {interaction.user.name} en el servidor {interaction.guild.name}."))
                         logger.info(
                             f"Notificación de eliminación enviada a {recipient.name} ({recipient_id})")
                     except discord.Forbidden:
@@ -208,47 +210,49 @@ class EliminarAmistosoSelect(ui.Select):
 
         hoy = datetime.now(
             self.bot.cogs['LeagueCog'].tz_minus_3).strftime("%Y-%m-%d")
-        amistosos = db.get_amistosos_del_dia(hoy)
+        amistosos = db.get_amistosos_del_dia(self.guild_id, hoy)
         table = self.bot.cogs['LeagueCog'].generate_amistosos_table(amistosos)
-        channel = self.bot.get_channel(
-            self.bot.cogs['LeagueCog'].amistosos_channel_id)
-        if channel and self.bot.cogs['LeagueCog'].amistosos_message_id:
-            try:
-                message = await channel.fetch_message(self.bot.cogs['LeagueCog'].amistosos_message_id)
-                await message.edit(content=table)
-            except discord.NotFound:
-                logger.warning(
-                    f"Mensaje {self.bot.cogs['LeagueCog'].amistosos_message_id} no encontrado para actualizar tabla de amistosos")
-            except discord.Forbidden:
-                logger.error(
-                    f"Permisos insuficientes para editar mensaje en canal {self.bot.cogs['LeagueCog'].amistosos_channel_id}")
+        config = db.get_server_config(self.guild_id)
+        if config and config['amistosos_channel_id']:
+            channel = self.bot.get_channel(config['amistosos_channel_id'])
+            if channel and self.bot.cogs['LeagueCog'].amistosos_message_id:
+                try:
+                    message = await channel.fetch_message(self.bot.cogs['LeagueCog'].amistosos_message_id)
+                    await message.edit(content=table)
+                except discord.NotFound:
+                    logger.warning(
+                        f"Mensaje {self.bot.cogs['LeagueCog'].amistosos_message_id} no encontrado para actualizar tabla de amistosos")
+                except discord.Forbidden:
+                    logger.error(
+                        f"Permisos insuficientes para editar mensaje en canal {config['amistosos_channel_id']}")
 
         await interaction.response.send_message(embed=success("Amistoso eliminado correctamente."), ephemeral=True)
 
 class ConfirmAmistosoView(ui.View):
-    def __init__(self, solicitud_id: int, bot: commands.Bot):
+    def __init__(self, solicitud_id: int, bot: commands.Bot, guild_id: int):
         super().__init__(timeout=None)
         self.solicitud_id = solicitud_id
         self.bot = bot
+        self.guild_id = guild_id
 
     @ui.button(label="✅ Aceptar", style=discord.ButtonStyle.green)
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
-        solicitud = db.get_solicitud_by_id(self.solicitud_id)
+        solicitud = db.get_solicitud_by_id(self.guild_id, self.solicitud_id)
         if not solicitud or solicitud['status'] != 'pending':
             await interaction.response.send_message(embed=error("Solicitud no válida o ya procesada."), ephemeral=True)
             return
-        manager_team = db.get_team_by_manager(interaction.user.id)
+        manager_team = db.get_team_by_manager(self.guild_id, interaction.user.id)
         if manager_team:
             team = manager_team
         else:
-            team = db.get_team_by_captain(interaction.user.id)
+            team = db.get_team_by_captain(self.guild_id, interaction.user.id)
         if not team or team['id'] != solicitud['solicitado_team_id']:
             await interaction.response.send_message(embed=error("No eres el manager ni capitán del equipo solicitado."), ephemeral=True)
             return
 
         hoy = datetime.now(
             self.bot.cogs['LeagueCog'].tz_minus_3).strftime("%Y-%m-%d")
-        amistosos_hoy = db.get_amistosos_del_dia(hoy)
+        amistosos_hoy = db.get_amistosos_del_dia(self.guild_id, hoy)
         if any(a['hora'] == solicitud['hora'] and (a['team1_id'] in [solicitud['solicitante_team_id'], solicitud['solicitado_team_id']] or a['team2_id'] in [solicitud['solicitante_team_id'], solicitud['solicitado_team_id']]) for a in amistosos_hoy):
             logger.warning(
                 f"Conflicto de horario a las {solicitud['hora']} para uno de los equipos")
@@ -256,12 +260,12 @@ class ConfirmAmistosoView(ui.View):
             return
 
         db.update_solicitud_status(
-            self.solicitud_id, 'accepted', interaction.user.id)
-        db.add_amistoso(solicitud['solicitante_team_id'],
+            self.guild_id, self.solicitud_id, 'accepted', interaction.user.id)
+        db.add_amistoso(self.guild_id, solicitud['solicitante_team_id'],
                         solicitud['solicitado_team_id'], solicitud['hora'], solicitud['fecha'])
 
         manager_id = team['manager_id']
-        captains = db.get_captains(team['id'])
+        captains = db.get_captains(self.guild_id, team['id'])
         recipients = set(
             [manager_id] + captains) if manager_id else set(captains)
         for recipient_id in recipients:
@@ -269,7 +273,7 @@ class ConfirmAmistosoView(ui.View):
                 recipient = self.bot.get_user(recipient_id)
                 if recipient:
                     try:
-                        await recipient.send(embed=info(f"El amistoso contra {db.get_team_by_id(solicitud['solicitante_team_id'])['name']} a las {solicitud['hora']} fue aceptado por {interaction.user.name}."))
+                        await recipient.send(embed=info(f"El amistoso contra {db.get_team_by_id(self.guild_id, solicitud['solicitante_team_id'])['name']} a las {solicitud['hora']} fue aceptado por {interaction.user.name} en el servidor {interaction.guild.name}."))
                         logger.info(
                             f"Notificación de aceptación enviada a {recipient.name} ({recipient_id})")
                     except discord.Forbidden:
@@ -281,37 +285,38 @@ class ConfirmAmistosoView(ui.View):
 
         await interaction.response.send_message(embed=success("Amistoso aceptado y programado."), ephemeral=True)
 
-        amistosos = db.get_amistosos_del_dia(hoy)
+        amistosos = db.get_amistosos_del_dia(self.guild_id, hoy)
         table = self.bot.cogs['LeagueCog'].generate_amistosos_table(amistosos)
-        channel = self.bot.get_channel(
-            self.bot.cogs['LeagueCog'].amistosos_channel_id)
-        if channel and self.bot.cogs['LeagueCog'].amistosos_message_id:
-            try:
-                message = await channel.fetch_message(self.bot.cogs['LeagueCog'].amistosos_message_id)
-                await message.edit(content=table)
-            except discord.NotFound:
-                logger.warning(
-                    f"Mensaje {self.bot.cogs['LeagueCog'].amistosos_message_id} no encontrado para actualizar tabla de amistosos")
-            except discord.Forbidden:
-                logger.error(
-                    f"Permisos insuficientes para editar mensaje en canal {self.bot.cogs['LeagueCog'].amistosos_channel_id}")
+        config = db.get_server_config(self.guild_id)
+        if config and config['amistosos_channel_id']:
+            channel = self.bot.get_channel(config['amistosos_channel_id'])
+            if channel and self.bot.cogs['LeagueCog'].amistosos_message_id:
+                try:
+                    message = await channel.fetch_message(self.bot.cogs['LeagueCog'].amistosos_message_id)
+                    await message.edit(content=table)
+                except discord.NotFound:
+                    logger.warning(
+                        f"Mensaje {self.bot.cogs['LeagueCog'].amistosos_message_id} no encontrado para actualizar tabla de amistosos")
+                except discord.Forbidden:
+                    logger.error(
+                        f"Permisos insuficientes para editar mensaje en canal {config['amistosos_channel_id']}")
 
     @ui.button(label="❌ Rechazar", style=discord.ButtonStyle.red)
     async def reject(self, interaction: discord.Interaction, button: ui.Button):
-        solicitud = db.get_solicitud_by_id(self.solicitud_id)
+        solicitud = db.get_solicitud_by_id(self.guild_id, self.solicitud_id)
         if not solicitud or solicitud['status'] != 'pending':
             await interaction.response.send_message(embed=error("Solicitud no válida o ya procesada."), ephemeral=True)
             return
-        manager_team = db.get_team_by_manager(interaction.user.id)
+        manager_team = db.get_team_by_manager(self.guild_id, interaction.user.id)
         if manager_team:
             team = manager_team
         else:
-            team = db.get_team_by_captain(interaction.user.id)
+            team = db.get_team_by_captain(self.guild_id, interaction.user.id)
         if not team or team['id'] != solicitud['solicitado_team_id']:
             await interaction.response.send_message(embed=error("No eres el manager ni capitán del equipo solicitado."), ephemeral=True)
             return
         db.update_solicitud_status(
-            self.solicitud_id, 'rejected', interaction.user.id)
+            self.guild_id, self.solicitud_id, 'rejected', interaction.user.id)
         await interaction.response.send_message(embed=info("Solicitud de amistoso rechazada."), ephemeral=True)
 
 class PaginationView(View):
@@ -366,16 +371,17 @@ class PaginationView(View):
             await self.update_embed(interaction)
 
 class ReviewView(ui.View):
-    def __init__(self, screenshot_id: int):
+    def __init__(self, screenshot_id: int, guild_id: int):
         super().__init__(timeout=None)
         self.screenshot_id = screenshot_id
+        self.guild_id = guild_id
 
     @ui.button(label="✅ Aceptar", style=discord.ButtonStyle.green)
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
         if not any(role.name == "Arbitro" for role in interaction.user.roles):
             await interaction.response.send_message(embed=error("Solo los usuarios con el rol 'Arbitro' pueden revisar capturas."), ephemeral=True)
             return
-        db.update_screenshot_status(self.screenshot_id, 'accepted')
+        db.update_screenshot_status(self.guild_id, self.screenshot_id, 'accepted')
         await interaction.response.edit_message(embed=success(f"Captura #{self.screenshot_id} aceptada."), view=None)
 
     @ui.button(label="❌ Rechazar", style=discord.ButtonStyle.red)
@@ -383,16 +389,13 @@ class ReviewView(ui.View):
         if not any(role.name == "Arbitro" for role in interaction.user.roles):
             await interaction.response.send_message(embed=error("Solo los usuarios con el rol 'Arbitro' pueden revisar capturas."), ephemeral=True)
             return
-        db.update_screenshot_status(self.screenshot_id, 'rejected')
+        db.update_screenshot_status(self.guild_id, self.screenshot_id, 'rejected')
         await interaction.response.edit_message(embed=success(f"Captura #{self.screenshot_id} rechazada."), view=None)
 
 class LeagueCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.ss_input_channel_id = 1396571890885333023
-        self.review_channel_id = 1396571902905946234
         self.tz_minus_3 = timezone(timedelta(hours=-3))
-        self.amistosos_channel_id = 1390465965015306352
         self.amistosos_message_id = None
 
     def generate_amistosos_table(self, amistosos: list) -> str:
@@ -403,8 +406,8 @@ class LeagueCog(commands.Cog):
         partidos_por_horario = {h: "Disponible" for h in horarios}
         for amistoso in amistosos:
             if amistoso['fecha'] == hoy:
-                team1 = db.get_team_by_id(amistoso['team1_id'])
-                team2 = db.get_team_by_id(amistoso['team2_id'])
+                team1 = db.get_team_by_id(self.bot.guild.id, amistoso['team1_id'])
+                team2 = db.get_team_by_id(self.bot.guild.id, amistoso['team2_id'])
                 if team1 and team2:
                     partidos_por_horario[amistoso['hora']
                                          ] = f"**{team1['name']} vs {team2['name']}** ⚽"
@@ -424,24 +427,20 @@ class LeagueCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
+        if message.author == self.bot.user:
+            logger.debug("Ignorando mensaje del bot.")
+            return
+
         config = db.get_server_config(message.guild.id)
         if not config or not config['ss_channel_id']:
             logger.warning(f"No se ha configurado el canal de SS para el guild {message.guild.id}")
             return
         if message.channel.id != config['ss_channel_id']:
             return
+
         await asyncio.sleep(1)
         logger.info(
             f"Mensaje recibido: '{message.content}' en canal {message.channel.id} por {message.author} ({message.author.id}) con adjuntos: {message.attachments}")
-
-        if message.author == self.bot.user:
-            logger.debug("Ignorando mensaje del bot.")
-            return
-
-        if message.channel.id != self.ss_input_channel_id:
-            logger.debug(
-                f"Mensaje ignorado: canal {message.channel.id} no es el canal de entrada {self.ss_input_channel_id}.")
-            return
 
         if not message.attachments:
             logger.debug("Mensaje ignorado: no tiene adjuntos.")
@@ -507,15 +506,17 @@ class LeagueCog(commands.Cog):
             '.', ':') if time_match else None
         logger.info(f"Hora detectada: {screenshot_time or 'NINGUNA'}")
 
-        review_channel = self.bot.get_channel(self.review_channel_id)
+        # Usamos el mismo canal de SS para revisión por simplicidad; podrías agregar un canal de revisión separado
+        review_channel = self.bot.get_channel(config['ss_channel_id'])
         if not review_channel:
             logger.error(
-                f"Canal de revisión {self.review_channel_id} no encontrado.")
-            await message.reply(embed=error("Error interno: canal de revisión no encontrado. Contacta a un admin."))
+                f"Canal de SS {config['ss_channel_id']} no encontrado.")
+            await message.reply(embed=error("Error interno: canal de SS no encontrado. Contacta a un admin."))
             return
 
         if nicktag and screenshot_time:
             screenshot_id = db.add_screenshot(
+                message.guild.id,
                 message.author.id,
                 nicktag,
                 discord_name,
@@ -523,12 +524,13 @@ class LeagueCog(commands.Cog):
                 attachment.url,
                 screenshot_time
             )
-            db.update_screenshot_status(screenshot_id, 'accepted')
+            db.update_screenshot_status(message.guild.id, screenshot_id, 'accepted')
             logger.info(
                 f"Captura #{screenshot_id} aceptada automáticamente para {discord_name}.")
             await message.reply(embed=success(f"Captura validada correctamente. NICKTAG: {nicktag}, Hora: {screenshot_time}"))
         else:
             screenshot_id = db.add_screenshot(
+                message.guild.id,
                 message.author.id,
                 nicktag or "No detectado",
                 discord_name,
@@ -553,12 +555,11 @@ class LeagueCog(commands.Cog):
                 inline=False
             )
             embed.set_image(url=attachment.url)
-            view = ReviewView(screenshot_id)
+            view = ReviewView(screenshot_id, message.guild.id)
             await review_channel.send(embed=embed, view=view)
             logger.info(f"Captura #{screenshot_id} enviada a revisión.")
             await message.reply(embed=error("Captura enviada a revisión: no se detectaron todos los datos requeridos."))
-
-        await self.bot.process_commands(message)
+            
     
     @app_commands.command(name="test_command", description="Comando de prueba para verificar sincronización")
     async def test_command(self, interaction: discord.Interaction):

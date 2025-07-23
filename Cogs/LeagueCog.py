@@ -660,10 +660,10 @@ class LeagueCog(commands.Cog):
     @app_commands.describe(nombre="Nombre del equipo", division="División del equipo")
     @app_commands.checks.has_permissions(administrator=True)
      async def crearequipo(self, interaction: discord.Interaction, nombre: str, division: str):
-           if db.add_team(interaction.guild.id, nombre, division):
-              await interaction.response.send_message(embed=success(f"Equipo {nombre} creado en división {division}."), ephemeral=True)
-          else:
-              await interaction.response.send_message(embed=error("El equipo ya existe o el manager ya está asignado a otro equipo."), ephemeral=True)
+         if db.add_team(interaction.guild.id, nombre, division):
+             await interaction.response.send_message(embed=success(f"Equipo {nombre} creado en división {division}."), ephemeral=True)
+         else:
+             await interaction.response.send_message(embed=error("El equipo ya existe o el manager ya está asignado a otro equipo."), ephemeral=True)
 
     @app_commands.command(name="amistosos", description="Mostrar la tabla de amistosos del día")
     async def amistosos(self, interaction: discord.Interaction):

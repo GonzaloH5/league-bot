@@ -659,7 +659,7 @@ class LeagueCog(commands.Cog):
     @app_commands.command(name="crearequipo", description="Crear un equipo nuevo")
     @app_commands.describe(nombre="Nombre del equipo", division="División del equipo")
     @app_commands.checks.has_permissions(administrator=True)
-     async def crearequipo(self, interaction: discord.Interaction, nombre: str, division: str):
+    async def crearequipo(self, interaction: discord.Interaction, nombre: str, division: str):
          if db.add_team(interaction.guild.id, nombre, division):
              await interaction.response.send_message(embed=success(f"Equipo {nombre} creado en división {division}."), ephemeral=True)
          else:

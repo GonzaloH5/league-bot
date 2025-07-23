@@ -39,7 +39,6 @@ async def on_ready():
     try:
         await bot.load_extension('Cogs.LeagueCog')
         logger.info('Cog LeagueCog cargado.')
-        # Sincronización por guild
         for guild in bot.guilds:
             if not is_guild_banned(guild.id):
                 create_tables(guild.id)
@@ -50,10 +49,9 @@ async def on_ready():
             else:
                 await guild.leave()
                 logger.info(f'Bot salió del guild baneado {guild.id}')
-        # Sincronización global como respaldo
         global_synced = await bot.tree.sync()
         logger.info(f'Comandos sincronizados globalmente: {[cmd.name for cmd in global_synced]}')
-        export_database_to_file(guild_id=None)  # Exportación global opcional
+        export_database_to_file(guild_id=None)
         logger.info('Bot completamente inicializado.')
     except Exception as e:
         logger.error(f'Error al cargar extensiones o sincronizar: {e}', exc_info=True)
@@ -79,7 +77,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     else:
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# Comando secreto para listar guilds (solo owner)
 @bot.tree.command(name="list_guilds", description="Lista los servidores en los que está el bot (solo owner)")
 async def list_guilds(interaction: discord.Interaction):
     if interaction.user.id != OWNER_ID:
@@ -101,7 +98,6 @@ async def list_guilds(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
     logger.info(f"El dueño {interaction.user.id} ejecutó /list_guilds.")
 
-# Comando para banear un guild (solo owner)
 @bot.tree.command(name="ban_guild", description="Banear un guild (solo owner)")
 @app_commands.describe(guild_id="ID del guild a banear")
 async def ban_guild_command(interaction: discord.Interaction, guild_id: str):
@@ -109,7 +105,6 @@ async def ban_guild_command(interaction: discord.Interaction, guild_id: str):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
     try:
-        # Validar que el guild_id sea un número entero válido y tenga al menos 10 dígitos
         if not guild_id.isdigit():
             raise ValueError("El ID del guild debe ser un número entero.")
         guild_id_int = int(guild_id)
@@ -133,7 +128,6 @@ async def ban_guild_command(interaction: discord.Interaction, guild_id: str):
         logger.error(f"Error inesperado al banear guild {guild_id}: {e}")
         await interaction.response.send_message(f"Error inesperado: {e}", ephemeral=True)
 
-# Comando para desbanear un guild (solo owner)
 @bot.tree.command(name="unban_guild", description="Desbanear un guild (solo owner)")
 @app_commands.describe(guild_id="ID del guild a desbanear")
 async def unban_guild_command(interaction: discord.Interaction, guild_id: str):
@@ -141,7 +135,6 @@ async def unban_guild_command(interaction: discord.Interaction, guild_id: str):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
     try:
-        # Validar que el guild_id sea un número entero válido y tenga al menos 10 dígitos
         if not guild_id.isdigit():
             raise ValueError("El ID del guild debe ser un número entero.")
         guild_id_int = int(guild_id)
@@ -149,7 +142,6 @@ async def unban_guild_command(interaction: discord.Interaction, guild_id: str):
             raise ValueError("El ID del guild es demasiado corto. Los IDs de Discord suelen tener al menos 10 dígitos.")
         
         from database import unban_guild, is_guild_banned
-        # Verificar si el guild está baneado antes de intentar desbanear
         if not is_guild_banned(guild_id_int):
             raise ValueError(f"El guild {guild_id_int} no está baneado.")
         
@@ -166,7 +158,6 @@ async def unban_guild_command(interaction: discord.Interaction, guild_id: str):
         logger.error(f"Error inesperado al desbanear guild {guild_id}: {e}")
         await interaction.response.send_message(f"Error inesperado: {str(e)}", ephemeral=True)
 
-# Comando para forzar sincronización de comandos (solo owner)
 @bot.tree.command(name="sync_commands", description="Forzar sincronización de comandos (solo owner)")
 async def sync_commands(interaction: discord.Interaction):
     if interaction.user.id != OWNER_ID:
@@ -181,7 +172,6 @@ async def sync_commands(interaction: discord.Interaction):
         await interaction.response.send_message(f"Error al sincronizar: {e}", ephemeral=True)
         logger.error(f"Error al sincronizar comandos manualmente: {e}")
 
-# Comando para abrir el mercado (solo admins)
 @bot.tree.command(name="open_market", description="Abrir el mercado de transferencias (solo admins)")
 @app_commands.checks.has_permissions(administrator=True)
 async def open_market(interaction: discord.Interaction):
@@ -189,13 +179,12 @@ async def open_market(interaction: discord.Interaction):
     set_market_status(interaction.guild.id, "open")
     await interaction.response.send_message("El mercado de transferencias ha sido abierto.", ephemeral=False)
 
-# Comando para cerrar el mercado (solo admins)
 @bot.tree.command(name="close_market", description="Cerrar el mercado de transferencias (solo admins)")
 @app_commands.checks.has_permissions(administrator=True)
 async def close_market(interaction: discord.Interaction):
     from database import set_market_status
     set_market_status(interaction.guild.id, "closed")
-    await interaction.response.send_message(" Forma de mercado de transferencias ha sido cerrada.", ephemeral=False)
+    await interaction.response.send_message("El mercado de transferencias ha sido cerrado.", ephemeral=False)
 
 if __name__ == '__main__':
     BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")

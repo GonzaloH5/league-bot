@@ -424,6 +424,12 @@ class LeagueCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
+        config = db.get_server_config(message.guild.id)
+        if not config or not config['ss_channel_id']:
+            logger.warning(f"No se ha configurado el canal de SS para el guild {message.guild.id}")
+            return
+        if message.channel.id != config['ss_channel_id']:
+            return
         await asyncio.sleep(1)
         logger.info(
             f"Mensaje recibido: '{message.content}' en canal {message.channel.id} por {message.author} ({message.author.id}) con adjuntos: {message.attachments}")
@@ -553,7 +559,7 @@ class LeagueCog(commands.Cog):
             await message.reply(embed=error("Captura enviada a revisión: no se detectaron todos los datos requeridos."))
 
         await self.bot.process_commands(message)
-
+    
     @app_commands.command(name="test_command", description="Comando de prueba para verificar sincronización")
     async def test_command(self, interaction: discord.Interaction):
         await interaction.response.send_message("¡Comando de prueba funcionando!", ephemeral=True)
@@ -668,16 +674,18 @@ class LeagueCog(commands.Cog):
     @app_commands.command(name="creartablaamistosos", description="Generar la tabla diaria de amistosos (solo admin)")
     @app_commands.checks.has_permissions(administrator=True)
     async def creartablaamistosos(self, interaction: discord.Interaction):
-        hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
-        db.delete_amistosos_del_dia(hoy)
-        channel = self.bot.get_channel(self.amistosos_channel_id)
+        config = db.get_server_config(interaction.guild.id)
+        if not config or not config['amistosos_channel_id']:
+            await interaction.response.send_message(embed=error("No se ha configurado el canal de amistosos."), ephemeral=True)
+            return
+        channel = self.bot.get_channel(config['amistosos_channel_id'])
         if not channel:
             await interaction.response.send_message(embed=error("Canal de amistosos no encontrado."), ephemeral=True)
             return
-        table = self.generate_amistosos_table([])
-        message = await channel.send(table)
-        self.amistosos_message_id = message.id
-        await interaction.response.send_message(embed=success("Tabla de amistosos del día creada."), ephemeral=True)
+            table = self.generate_amistosos_table([])
+            message = await channel.send(table)
+            self.amistosos_message_id = message.id
+            await interaction.response.send_message(embed=success("Tabla de amistosos del día creada."), ephemeral=True)
 
     @app_commands.command(name="registraramistoso", description="Solicitar un amistoso contra otro equipo")
     @app_commands.describe(equipo="Nombre del equipo contrario", hora="Hora del amistoso (HH:MM)")

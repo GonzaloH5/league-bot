@@ -451,7 +451,7 @@ class LeagueCog(commands.Cog):
             await message.reply(embed=error("Por favor, envía una imagen en formato PNG o JPG."))
             return
 
-        player = db.get_player_by_id(message.author.id)
+        player = db.get_player_by_id(message.guild.id, message.author.id)
         if not player:
             logger.warning(
                 f"Usuario {message.author.id} no está registrado como jugador.")
@@ -812,7 +812,7 @@ class LeagueCog(commands.Cog):
         if not team:
             await interaction.response.send_message(embed=error("Equipo no encontrado."), ephemeral=True)
             return
-        if team['manager_id']:
+        if team and team['manager_id'] is not None:
             await interaction.response.send_message(embed=error("El equipo ya tiene un manager."), ephemeral=True)
             return
         if db.get_team_by_manager(interaction.guild.id, manager.id):
@@ -1217,10 +1217,13 @@ class LeagueCog(commands.Cog):
     @app_commands.describe(equipo="Nombre del equipo")
     @app_commands.checks.has_permissions(administrator=True)
     async def eliminarequipo(self, interaction: discord.Interaction, equipo: str):
-        if not db.delete_team(interaction.guild.id, equipo):
-            await interaction.response.send_message(embed=error("Equipo no encontrado o error al eliminar."), ephemeral=True)
+        team = db.get_team_by_name(interaction.guild.id, nombre)
+        if not team:
+            await interaction.response.send_message(embed=error("Equipo no encontrado."), ephemeral=True)
             return
-        await interaction.response.send_message(embed=success(f"Equipo {equipo} eliminado. Sus jugadores son agentes libres."))
+        # Aquí va el código para eliminar el equipo
+        db.delete_team(interaction.guild.id, nombre)
+        await interaction.response.send_message(embed=success("Equipo eliminado, Todos sus jugadores son agentes libres"), ephemeral=True)
 
     @app_commands.command(name="fichajes", description="Ver los últimos fichajes realizados en la liga")
     @app_commands.describe(cantidad="Número de fichajes a mostrar (1-25)")

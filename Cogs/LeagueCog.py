@@ -634,14 +634,29 @@ class LeagueCog(commands.Cog):
                 f"Error inesperado en /eliminaramistoso: {e}", exc_info=True)
             await interaction.response.send_message(embed=error("Ocurrió un error interno. Contacta a un administrador."), ephemeral=True)
 
+    # En LeagueCog.py
+    @app_commands.command(name="asignarcanalss", description="Asignar el canal para capturas de pantalla (solo admin)")
+    @app_commands.describe(canal="Canal para capturas de pantalla")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def asignarcanalss(self, interaction: discord.Interaction, canal: discord.TextChannel):
+        db.set_ss_channel(interaction.guild.id, canal.id)
+        await interaction.response.send_message(embed=success(f"Canal de capturas de pantalla establecido a {canal.mention}."), ephemeral=True)
+
+    @app_commands.command(name="asignarcanalamistosos", description="Asignar el canal para tablas de amistosos (solo admin)")
+    @app_commands.describe(canal="Canal para tablas de amistosos")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def asignarcanalamistosos(self, interaction: discord.Interaction, canal: discord.TextChannel):
+        db.set_amistosos_channel(interaction.guild.id, canal.id)
+        await interaction.response.send_message(embed=success(f"Canal de tablas de amistosos establecido a {canal.mention}."), ephemeral=True)
+    
     @app_commands.command(name="crearequipo", description="Crear un equipo nuevo")
     @app_commands.describe(nombre="Nombre del equipo", division="División del equipo")
     @app_commands.checks.has_permissions(administrator=True)
-    async def crearequipo(self, interaction: discord.Interaction, nombre: str, division: str):
-        if db.add_team(interaction.guild.id, nombre, division):
-            await interaction.response.send_message(embed=success(f"Equipo {nombre} creado en división {division}."), ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=error("El equipo ya existe o el manager ya está asignado a otro equipo."), ephemeral=True)
+     async def crearequipo(self, interaction: discord.Interaction, nombre: str, division: str):
+           if db.add_team(interaction.guild.id, nombre, division):
+              await interaction.response.send_message(embed=success(f"Equipo {nombre} creado en división {division}."), ephemeral=True)
+          else:
+              await interaction.response.send_message(embed=error("El equipo ya existe o el manager ya está asignado a otro equipo."), ephemeral=True)
 
     @app_commands.command(name="amistosos", description="Mostrar la tabla de amistosos del día")
     async def amistosos(self, interaction: discord.Interaction):

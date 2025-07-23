@@ -69,6 +69,13 @@ def create_tables(guild_id: int):
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
+            cur.executescript("""
+            CREATE TABLE IF NOT EXISTS server_config (
+                guild_id INTEGER PRIMARY KEY,
+                ss_channel_id INTEGER,
+                amistosos_channel_id INTEGER
+            );
+
             """)
             conn.commit()
         database_logger.info(f"Tablas creadas/verificadas para guild {guild_id}.")
@@ -1032,6 +1039,43 @@ def restore_database_from_file(guild_id: int, backup_file: str):
         database_logger.error(f"Error al restaurar la base de datos desde {backup_file} para guild {guild_id}: {e}")
         return False
 
+# Obtener la configuración de un servidor
+def get_server_config(guild_id: int) -> dict:
+    db_path = get_db_path(guild_id)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute('SELECT * FROM server_config WHERE guild_id = ?', (guild_id,))
+            return _row_to_dict(cur.fetchone())
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al obtener configuración del servidor {guild_id}: {e}")
+        return None
+
+# Establecer el canal de capturas de pantalla
+def set_ss_channel(guild_id: int, channel_id: int):
+    db_path = get_db_path(guild_id)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute('INSERT OR REPLACE INTO server_config (guild_id, ss_channel_id) VALUES (?, ?)', (guild_id, channel_id))
+            conn.commit()
+            database_logger.info(f"Canal de SS establecido para guild {guild_id}: {channel_id}")
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al establecer canal de SS para guild {guild_id}: {e}")
+
+# Establecer el canal de tablas de amistosos
+def set_amistosos_channel(guild_id: int, channel_id: int):
+    db_path = get_db_path(guild_id)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute('INSERT OR REPLACE INTO server_config (guild_id, amistosos_channel_id) VALUES (?, ?)', (guild_id, channel_id))
+            conn.commit()
+            database_logger.info(f"Canal de amistosos establecido para guild {guild_id}: {channel_id}")
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al establecer canal de amistosos para guild {guild_id}: {e}")
+        
 def get_free_agents(guild_id: int):
     db_path = get_db_path(guild_id)
     try:

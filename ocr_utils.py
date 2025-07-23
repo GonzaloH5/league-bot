@@ -9,7 +9,8 @@ import logging
 load_dotenv()
 logger = logging.getLogger('leaguebot')
 
-TESSERACT_PATH = os.getenv("TESSERACT_PATH", "C:\\Program Files\\Tesseract-OCR\\tesseract.exe")
+# Default to a common Linux path if not set, compatible with Ubuntu
+TESSERACT_PATH = os.getenv("TESSERACT_PATH", "/usr/bin/tesseract")
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
 
 def do_ocr(image_path: str) -> str:

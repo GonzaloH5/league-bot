@@ -402,16 +402,15 @@ class LeagueCog(commands.Cog):
         horarios = ["19:00", "19:30", "20:00", "20:30", "21:00",
                     "21:30", "22:00", "22:30", "23:00", "23:30", "00:00"]
         hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
-
+    
         partidos_por_horario = {h: "Disponible" for h in horarios}
         for amistoso in amistosos:
             if amistoso['fecha'] == hoy:
-                team1 = db.get_team_by_id(self.bot.guild.id, amistoso['team1_id'])
-                team2 = db.get_team_by_id(self.bot.guild.id, amistoso['team2_id'])
+                team1 = db.get_team_by_id(amistoso['team1_id'])  # Corregido: eliminado self.bot.guild.id
+                team2 = db.get_team_by_id(amistoso['team2_id'])  # Corregido: eliminado self.bot.guild.id
                 if team1 and team2:
-                    partidos_por_horario[amistoso['hora']
-                                         ] = f"**{team1['name']} vs {team2['name']}** ⚽"
-
+                    partidos_por_horario[amistoso['hora']] = f"**{team1['name']} vs {team2['name']}** ⚽"
+    
         table = f"```\n"
         table += f"📅 Amistosos del {hoy} 📅\n"
         table += f"⚽ Horario | Partido ⚽\n"

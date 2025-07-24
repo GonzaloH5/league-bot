@@ -662,19 +662,22 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
 
         try:
             hora_dt = datetime.strptime(hora, "%H:%M")
-            if hora == "00:00" or hora == "23:59":  # Permitir "00:00" y "23:59" como casos especiales
-                pass
-            elif not (19 <= hora_dt.hour < 24 and hora_dt.minute % 30 == 0):
+            # Validar hora: entre 19:00 y 23:59, en intervalos de 30 minutos o exactamente 23:59
+            if not (19 <= hora_dt.hour <= 23):
+                raise ValueError
+            if hora_dt.hour == 23 and hora_dt.minute == 59:
+                pass  # Aceptar 23:59 como válido
+            elif hora_dt.minute % 30 != 0:
                 raise ValueError
         except ValueError:
-            await interaction.followup.send(embed=error("Hora inválida. Debe ser entre 19:00 y 23:30 en intervalos de 30 minutos, 23:59 o 00:00."), ephemeral=True)
+            await interaction.followup.send(embed=error("Hora inválida. Debe ser entre 19:00 y 00:00 en intervalos de 30 minutos, o 23:59."), ephemeral=True)
             return
-
+    
         hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
         fecha = hoy
         if hora == "00:00":
             hora = "23:59"
-            fecha_dt = datetime.strptime(hoy, "%Y-%m-%d") - timedelta(days=1)
+            fecha_dt = datetime.strptime(fecha, "%Y-%m-%d") - timedelta(days=1)
             fecha = fecha_dt.strftime("%Y-%m-%d")
     
         amistosos = db.get_amistosos_del_dia(interaction.guild.id, fecha)

@@ -632,6 +632,15 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
         logger.info(f"Usuario {interaction.user.id} ejecutó /registraramistoso para equipo '{equipo}' a las {hora}")
         await interaction.response.defer(ephemeral=True)
 
+        try:
+            solicitud_id = db.add_solicitud_amistoso(guild_id, team1_id, team2_id, hora, fecha)
+            if solicitud_id is None:
+                await interaction.followup.send(embed=error("No se pudo crear la solicitud."), ephemeral=True)
+                return
+        except Exception as e:
+            await interaction.followup.send(embed=error(f"Error al crear la solicitud: {str(e)}"), ephemeral=True)
+            return
+
         manager_team = db.get_team_by_manager(interaction.guild.id, interaction.user.id)
         if manager_team:
             team = manager_team
@@ -662,16 +671,15 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
 
         try:
             hora_dt = datetime.strptime(hora, "%H:%M")
-            # Validar hora: entre 19:00 y 23:59, en intervalos de 30 minutos o exactamente 23:59
-            if not (19 <= hora_dt.hour <= 23):
-                raise ValueError
-            if hora_dt.hour == 23 and hora_dt.minute == 59:
-                pass  # Aceptar 23:59 como válido
-            elif hora_dt.minute % 30 != 0:
+            # Permitir 23:59 y 00:00 como excepciones
+            if hora in ["23:59", "00:00"]:
+                pass  # Estas horas son válidas
+            elif not (19 <= hora_dt.hour < 24 and hora_dt.minute % 30 == 0):
                 raise ValueError
         except ValueError:
-            await interaction.followup.send(embed=error("Hora inválida. Debe ser entre 19:00 y 00:00 en intervalos de 30 minutos, o 23:59."), ephemeral=True)
+            await interaction.followup.send(embed=error("Hora inválida. Debe ser entre 19:00 y 00:00 en intervalos de 30 minutos, o 23:59/00:00."), ephemeral=True)
             return
+
     
         hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
         fecha = hoy

@@ -16,8 +16,13 @@ async def resolve_team(interaction: Interaction, name: str = None):
         return None
     return team
 
-async def check_ban(interaction: Interaction, player_id: int):
-    player = get_player_by_id(interaction.guild.id, player_id)
+async def check_ban(interaction: Interaction, player_id: int, guild_id: int = None):
+    if guild_id is None:
+        if interaction.guild is None:
+            await send_error(interaction, "No se pudo determinar el servidor.")
+            return True
+        guild_id = interaction.guild.id
+    player = get_player_by_id(guild_id, player_id)
     if player and player['banned']:
         await send_error(interaction, "Este jugador está sancionado y no puede interactuar con el bot.")
         return True

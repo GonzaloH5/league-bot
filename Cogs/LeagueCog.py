@@ -532,31 +532,31 @@ class LeagueCog(commands.Cog):
         status = db.get_market_status(interaction.guild.id)
         await interaction.response.send_message(f"El mercado está {status}.", ephemeral=True)
 
-    @app_commands.command(name="ss", description="Ver historial de capturas validadas")
-    @app_commands.describe(jugador="Jugador objetivo (opcional)")
-    async def ss(self, interaction: discord.Interaction, jugador: discord.User = None):
-        if jugador and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(embed=error("Solo los admins pueden ver el historial de otros jugadores."), ephemeral=True)
-            return
+    @app_commands.command(name="ss", description="Ver historial de capturas")
+@app_commands.describe(jugador="Jugador objetivo (opcional)")
+async def ss(self, interaction: discord.Interaction, jugador: discord.User = None):
+    if jugador and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(embed=error("Solo los administradores pueden ver el historial de otros usuarios."), ephemeral=True)
+        return
 
-        user_id = jugador.id if jugador else interaction.user.id
-        screenshots = db.get_screenshots_by_user(interaction.guild.id, user_id)
+    user_id = jugador.id if jugador else interaction.user.id
+    screenshots = db.get_screenshots_by_user(interaction.guild.id, user_id)
+    if not screenshots:
+        await interaction.response.send_message(embed=info("No hay capturas registradas."), ephemeral=True)
+        return
 
-        if not screenshots:
-            await interaction.response.send_message(embed=info("No hay capturas registradas."), ephemeral=True)
-            return
-
-        embed = info(
-            f"Historial de capturas de {jugador.name if jugador else interaction.user.name}")
-        for ss in screenshots[:10]:
-            embed.add_field(
-                name=f"ID: {ss['id']} ({ss['status']})",
-                value=f"NICKTAG: {ss['nicktag']}\nCanal: {f'#{self.bot.get_channel(ss['channel_id']).name}' if self.bot.get_channel(
-                    ss['channel_id']) else 'Desconocido'}\nHora: {ss['screenshot_time'] or 'No detectada'}\nFecha: {ss['timestamp']}",
-                inline=False
-            )
-        embed.set_footer(text=f"Total: {len(screenshots)} capturas")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    embed = info(f"Historial de capturas de {jugador.name if jugador else interaction.user.name}")
+    for ss in screenshots[:10]:
+        channel = self.bot.get_channel(ss['channel_id'])
+        channel_name = f"#{channel.name}" if channel else "Canal no encontrado"
+        value = f"NICKTAG: {ss['nicktag']}\nCanal: {channel_name}"
+        embed.add_field(
+            name=f"Captura {ss['id']}",
+            value=value,
+            inline=False
+        )
+    embed.set_footer(text=f"Total: {len(screenshots)} capturas")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="set_screenshot_settings", description="Configurar canal y rol para capturas (solo admin)")
     @app_commands.describe(canal="Canal para capturas", rol="Rol de árbitro")

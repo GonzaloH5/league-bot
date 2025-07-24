@@ -1,7 +1,7 @@
 import sqlite3
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 database_logger = logging.getLogger('database')
 database_logger.setLevel(logging.INFO)
@@ -407,39 +407,53 @@ def get_transferable_players(guild_id: int) -> list:
         return []
 
 def add_solicitud_amistoso(guild_id: int, solicitante_team_id: int, solicitado_team_id: int, hora: str, fecha: str, user_id: int) -> int:
+    """
+    Añade una solicitud de amistoso a la base de datos, ajustando la hora "00:00" a "23:59" del día anterior si es necesario.
+    
+    :param guild_id: ID del servidor de Discord.
+    :param solicitante_team_id: ID del equipo que solicita el amistoso.
+    :param solicitado_team_id: ID del equipo solicitado para el amistoso.
+    :param hora: Hora del amistoso en formato "HH:MM".
+    :param fecha: Fecha del amistoso en formato "YYYY-MM-DD".
+    :param user_id: ID del usuario que realiza la solicitud.
+    :return: ID de la solicitud creada si tiene éxito, -1 si hay un error.
+    """
+    # Obtener la ruta de la base de datos y los datos del equipo solicitante
     db_path = get_db_path(guild_id)
     team = get_team_by_id(guild_id, solicitante_team_id)
+    
+    # Verificar si el usuario tiene permisos (manager o capitán)
     if not team or (team['manager_id'] != user_id and not is_captain(guild_id, solicitante_team_id, user_id)):
+        database_logger.warning(f"Usuario {user_id} no autorizado para solicitar amistoso para equipo {solicitante_team_id}")
         return -1
+    
+    # Ajustar la hora "00:00" a "23:59" del día anterior
     if hora == "00:00":
         hora = "23:59"
-        fecha_dt = datetime.strptime(fecha, "%Y-%m-%d") - timedelta(days=1)
-        fecha = fecha_dt.strftime("%Y-%m-%d")
+        try:
+            fecha_dt = datetime.strptime(fecha, "%Y-%m-%d") - timedelta(days=1)
+            fecha = fecha_dt.strftime("%Y-%m-%d")
+        except ValueError as ve:
+            database_logger.error(f"Error al ajustar la fecha {fecha}: {ve}")
+            return -1
+    
+    # Insertar la solicitud en la base de datos
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
-            cur.execute('INSERT INTO solicitudes_amistosos (solicitante_team_id, solicitado_team_id, hora, fecha, status) VALUES (?, ?, ?, ?, ?)', 
-                        (solicitante_team_id, solicitado_team_id, hora, fecha, 'pending'))
+            cur.execute(
+                'INSERT INTO solicitudes_amistosos (solicitante_team_id, solicitado_team_id, hora, fecha, status) VALUES (?, ?, ?, ?, ?)',
+                (solicitante_team_id, solicitado_team_id, hora, fecha, 'pending')
+            )
             conn.commit()
             cur.execute('SELECT last_insert_rowid()')
             solicitud_id = cur.fetchone()[0]
+            database_logger.info(f"Solicitud de amistoso creada con ID {solicitud_id} para guild {guild_id}")
             return solicitud_id
     except sqlite3.Error as e:
-        database_logger.error(f"Error al crear solicitud de amistoso: {e}")
+        database_logger.error(f"Error al crear solicitud de amistoso para guild {guild_id}: {e}")
         return -1
-
-def get_solicitudes_pendientes(guild_id: int, team_id: int) -> list:
-    db_path = get_db_path(guild_id)
-    try:
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute('SELECT * FROM solicitudes_amistosos WHERE (solicitante_team_id = ? OR solicitado_team_id = ?) AND status = ?', (team_id, team_id, 'pending'))
-            return [dict(row) for row in cur.fetchall()]
-    except sqlite3.Error as e:
-        database_logger.error(f"Error al obtener solicitudes pendientes para el equipo {team_id} en guild {guild_id}: {e}")
-        return []
-
+        
 def get_solicitud_by_id(guild_id: int, solicitud_id: int) -> dict:
     db_path = get_db_path(guild_id)
     try:

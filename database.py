@@ -72,7 +72,8 @@ def create_tables(guild_id: int):
             CREATE TABLE IF NOT EXISTS server_config (
                 guild_id INTEGER PRIMARY KEY,
                 ss_channel_id INTEGER,
-                amistosos_channel_id INTEGER
+                amistosos_channel_id INTEGER,
+                arbiter_role_id INTEGER
             );
             """)
             conn.commit()
@@ -194,6 +195,20 @@ def get_market_status(guild_id: int) -> str:
     except sqlite3.Error as e:
         database_logger.error(f"Error al obtener estado del mercado para guild {guild_id}: {e}")
         return 'closed'
+
+def set_server_settings(guild_id: int, ss_channel_id: int, arbiter_role_id: int):
+    db_path = get_db_path(guild_id)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT OR REPLACE INTO server_config (guild_id, ss_channel_id, arbiter_role_id) VALUES (?, ?, ?)",
+                (guild_id, ss_channel_id, arbiter_role_id)
+            )
+            conn.commit()
+            database_logger.info(f"Configuración establecida para guild {guild_id}: canal {ss_channel_id}, rol {arbiter_role_id}")
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al establecer configuración para guild {guild_id}: {e}")
 
 def reset_transferable_status(guild_id: int):
     db_path = get_db_path(guild_id)
@@ -395,8 +410,11 @@ def add_solicitud_amistoso(guild_id: int, solicitante_team_id: int, solicitado_t
     db_path = get_db_path(guild_id)
     team = get_team_by_id(guild_id, solicitante_team_id)
     if not team or (team['manager_id'] != user_id and not is_captain(guild_id, solicitante_team_id, user_id)):
-        database_logger.warning(f"Usuario {user_id} no autorizado para solicitar amistoso para equipo {solicitante_team_id} en guild {guild_id}")
         return -1
+    if hora == "00:00":
+        hora = "23:59"
+        fecha_dt = datetime.strptime(fecha, "%Y-%m-%d") - timedelta(days=1)
+        fecha = fecha_dt.strftime("%Y-%m-%d")
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
@@ -405,10 +423,9 @@ def add_solicitud_amistoso(guild_id: int, solicitante_team_id: int, solicitado_t
             conn.commit()
             cur.execute('SELECT last_insert_rowid()')
             solicitud_id = cur.fetchone()[0]
-            database_logger.info(f"Solicitud de amistoso creada: ID {solicitud_id} en guild {guild_id}")
             return solicitud_id
     except sqlite3.Error as e:
-        database_logger.error(f"Error al crear solicitud de amistoso en guild {guild_id}: {e}")
+        database_logger.error(f"Error al crear solicitud de amistoso: {e}")
         return -1
 
 def get_solicitudes_pendientes(guild_id: int, team_id: int) -> list:
@@ -456,15 +473,18 @@ def update_solicitud_status(guild_id: int, solicitud_id: int, status: str, user_
 
 def add_amistoso(guild_id: int, team1_id: int, team2_id: int, hora: str, fecha: str) -> bool:
     db_path = get_db_path(guild_id)
+    if hora == "00:00":
+        hora = "23:59"
+        fecha_dt = datetime.strptime(fecha, "%Y-%m-%d") - timedelta(days=1)
+        fecha = fecha_dt.strftime("%Y-%m-%d")
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
             cur.execute('INSERT INTO amistosos (team1_id, team2_id, hora, fecha) VALUES (?, ?, ?, ?)', (team1_id, team2_id, hora, fecha))
             conn.commit()
-            database_logger.info(f"Amistoso agregado: {team1_id} vs {team2_id} a las {hora} el {fecha} en guild {guild_id}")
             return True
     except sqlite3.Error as e:
-        database_logger.error(f"Error al agregar amistoso en guild {guild_id}: {e}")
+        database_logger.error(f"Error al agregar amistoso: {e}")
         return False
 
 def get_amistosos_del_dia(guild_id: int, fecha: str) -> list:

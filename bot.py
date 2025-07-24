@@ -29,6 +29,7 @@ intents.members = True
 intents.messages = True
 intents.guild_messages = True
 intents.dm_messages = True
+
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 OWNER_ID = int(os.getenv("OWNER_ID", "509812954426769418"))  # Agrega tu ID en .env como OWNER_ID

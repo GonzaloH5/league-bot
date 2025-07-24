@@ -665,16 +665,15 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
             return
 
         try:
-            if hora == "00:00":
-                hora_dt = datetime.strptime("23:59", "%H:%M")  # Trata "00:00" como "23:59"
-            else:
-                hora_dt = datetime.strptime(hora, "%H:%M")
-            if not (19 <= hora_dt.hour < 24 and hora_dt.minute % 30 == 0):
-                raise ValueError
+            hora_dt = datetime.strptime(hora, "%H:%M")
+            if hora == ("00:00","23:59"):  # Permitir "00:00" explícitamente
+            pass
+            elif not (19 <= hora_dt.hour < 24 and hora_dt.minute % 30 == 0):
+            raise ValueError
         except ValueError:
-            await interaction.followup.send(embed=error("Hora inválida. Debe ser entre 19:00 y 00:00 en intervalos de 30 minutos."), ephemeral=True)
+            await interaction.followup.send(embed=error("Hora inválida. Debe ser entre 19:00 y 23:30 en intervalos de 30 minutos, o 00:00."), ephemeral=True)
             return
-
+            
         manager_id = solicitado_team['manager_id']
         captains = db.get_captains(interaction.guild.id, solicitado_team['id'])
         recipients = set([manager_id] + captains) if manager_id else set(captains)

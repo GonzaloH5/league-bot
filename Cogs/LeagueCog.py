@@ -624,10 +624,12 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
         await interaction.response.send_message(embed=success("Tabla de amistosos generada."), ephemeral=True)
 
     @app_commands.command(name="registraramistoso", description="Solicitar un amistoso contra otro equipo")
-    @app_commands.describe(equipo="Nombre del equipo contrario", hora="Hora del amistoso (HH:MM)")
+    @app_commands.describe(
+        equipo="Nombre del equipo contrario",
+        hora="Hora del amistoso (HH:MM)"
+    )
     async def registraramistoso(self, interaction: discord.Interaction, equipo: str, hora: str):
         logger.info(f"Usuario {interaction.user.id} ejecutó /registraramistoso para equipo '{equipo}' a las {hora}")
-
         await interaction.response.defer(ephemeral=True)
 
         manager_team = db.get_team_by_manager(interaction.guild.id, interaction.user.id)
@@ -638,7 +640,7 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
         else:
             captain_team = db.get_team_by_captain(interaction.guild.id, interaction.user.id)
             if captain_team:
-                team = captain_team
+                    team = captain_team
                 is_manager = False
                 is_captain_flag = True
             else:
@@ -658,22 +660,33 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
             await interaction.followup.send(embed=error("No puedes jugar contra tu propio equipo."), ephemeral=True)
             return
 
-        hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
-        amistosos_hoy = db.get_amistosos_del_dia(interaction.guild.id, hoy)
-        if any(a['hora'] == hora and (a['team1_id'] in [team['id'], solicitado_team['id']] or a['team2_id'] in [team['id'], solicitado_team['id']]) for a in amistosos_hoy):
-            await interaction.followup.send(embed=error("Uno de los equipos ya tiene un amistoso programado a esa hora."), ephemeral=True)
-            return
-
         try:
             hora_dt = datetime.strptime(hora, "%H:%M")
-            if hora == ("00:00","23:59"):  # Permitir "00:00" explícitamente
-            pass
+            if hora == "00:00":  # Permitir "00:00" como caso especial
+                pass
             elif not (19 <= hora_dt.hour < 24 and hora_dt.minute % 30 == 0):
-            raise ValueError
+                raise ValueError
         except ValueError:
             await interaction.followup.send(embed=error("Hora inválida. Debe ser entre 19:00 y 23:30 en intervalos de 30 minutos, o 00:00."), ephemeral=True)
             return
-            
+
+        hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
+        fecha = hoy
+        if hora == "00:00":
+            hora = "23:59"
+            fecha_dt = datetime.strptime(hoy, "%Y-%m-%d") - timedelta(days=1)
+            fecha = fecha_dt.strftime("%Y-%m-%d")
+    
+        amistosos = db.get_amistosos_del_dia(interaction.guild.id, fecha)
+        if any(a['hora'] == hora and (a['team1_id'] in [team['id'], solicitado_team['id']] or a['team2_id'] in [team['id'], solicitado_team['id']]) for a in amistosos):
+            await interaction.followup.send(embed=error("Uno de los equipos ya tiene un amistoso programado a esa hora."), ephemeral=True)
+            return
+
+        solicitud_id = db.add_solicitud_amistoso(interaction.guild.id, team['id'], solicitado_team['id'], hora, fecha, interaction.user.id)
+        if solicitud_id == -1:
+            await interaction.followup.send(embed=error("Error al registrar la solicitud de amistoso."), ephemeral=True)
+            return
+
         manager_id = solicitado_team['manager_id']
         captains = db.get_captains(interaction.guild.id, solicitado_team['id'])
         recipients = set([manager_id] + captains) if manager_id else set(captains)
@@ -699,7 +712,6 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
             await interaction.followup.send(embed=success(f"Solicitud enviada, pero no se pudo notificar a: {', '.join(failed_dms)}."), ephemeral=True)
         else:
             await interaction.followup.send(embed=success("Solicitud de amistoso enviada."), ephemeral=True)
-
 
     @app_commands.command(name="resetearamistosos", description="Reiniciar la tabla de amistosos (solo admin)")
     @app_commands.checks.has_permissions(administrator=True)

@@ -5,7 +5,7 @@ from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 import traceback
-from database import export_database_to_file, is_guild_banned, create_tables, create_screenshots_table, create_amistosos_tables
+from database import export_database_to_file, is_guild_banned, create_tables
 
 load_dotenv()
 
@@ -42,9 +42,7 @@ async def on_ready():
         logger.info('Cog LeagueCog cargado.')
         for guild in bot.guilds:
             if not is_guild_banned(guild.id):
-                create_tables(guild.id)
-                create_screenshots_table(guild.id)
-                create_amistosos_tables(guild.id)
+                create_tables(guild.id)  # Solo esta línea es suficiente
                 synced = await bot.tree.sync(guild=discord.Object(id=guild.id))
                 logger.info(f'Comandos sincronizados para guild {guild.id}: {[cmd.name for cmd in synced]}')
             else:
@@ -63,9 +61,7 @@ async def on_guild_join(guild):
         await guild.leave()
         logger.info(f'Bot salió del guild baneado {guild.id}')
     else:
-        create_tables(guild.id)
-        create_screenshots_table(guild.id)
-        create_amistosos_tables(guild.id)
+        create_tables(guild.id)  # Solo esta línea es suficiente
         synced = await bot.tree.sync(guild=discord.Object(id=guild.id))
         logger.info(f'Comandos sincronizados para nuevo guild {guild.id}: {[cmd.name for cmd in synced]}')
 

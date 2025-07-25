@@ -419,7 +419,7 @@ class LeagueCog(commands.Cog):
         self.amistosos_message_id = None
 
     def generate_amistosos_table(self, guild_id: int, amistosos: list) -> str:
-        horarios = ["19:00", "19:30", "20:00", "20:30", "21:00", "21:30", "22:00", "22:30", "23:00", "23:30", "23:59","00:00"]
+        horarios = ["19:00", "19:30", "20:00", "20:30", "21:00", "21:30", "22:00", "22:30", "23:00", "23:30", "23:59"]
         hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
         partidos_por_horario = {h: "Disponible" for h in horarios}
         for amistoso in amistosos:
@@ -533,30 +533,30 @@ class LeagueCog(commands.Cog):
         await interaction.response.send_message(f"El mercado está {status}.", ephemeral=True)
 
     @app_commands.command(name="ss", description="Ver historial de capturas")
-@app_commands.describe(jugador="Jugador objetivo (opcional)")
-async def ss(self, interaction: discord.Interaction, jugador: discord.User = None):
-    if jugador and not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message(embed=error("Solo los administradores pueden ver el historial de otros usuarios."), ephemeral=True)
-        return
+    @app_commands.describe(jugador="Jugador objetivo (opcional)")
+    async def ss(self, interaction: discord.Interaction, jugador: discord.User = None):
+        if jugador and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(embed=error("Solo los administradores pueden ver el historial de otros usuarios."), ephemeral=True)
+            return
 
-    user_id = jugador.id if jugador else interaction.user.id
-    screenshots = db.get_screenshots_by_user(interaction.guild.id, user_id)
-    if not screenshots:
-        await interaction.response.send_message(embed=info("No hay capturas registradas."), ephemeral=True)
-        return
+        user_id = jugador.id if jugador else interaction.user.id
+        screenshots = db.get_screenshots_by_user(interaction.guild.id, user_id)
+        if not screenshots:
+            await interaction.response.send_message(embed=info("No hay capturas registradas."), ephemeral=True)
+            return
 
-    embed = info(f"Historial de capturas de {jugador.name if jugador else interaction.user.name}")
-    for ss in screenshots[:10]:
-        channel = self.bot.get_channel(ss['channel_id'])
-        channel_name = f"#{channel.name}" if channel else "Canal no encontrado"
-        value = f"NICKTAG: {ss['nicktag']}\nCanal: {channel_name}"
-        embed.add_field(
-            name=f"Captura {ss['id']}",
-            value=value,
-            inline=False
-        )
-    embed.set_footer(text=f"Total: {len(screenshots)} capturas")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed = info(f"Historial de capturas de {jugador.name if jugador else interaction.user.name}")
+        for ss in screenshots[:10]:
+            channel = self.bot.get_channel(ss['channel_id'])
+            channel_name = f"#{channel.name}" if channel else "Canal no encontrado"
+            value = f"NICKTAG: {ss['nicktag']}\nCanal: {channel_name}"
+            embed.add_field(
+                name=f"Captura {ss['id']}",
+                value=value,
+                inline=False
+            )
+        embed.set_footer(text=f"Total: {len(screenshots)} capturas")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="set_screenshot_settings", description="Configurar canal y rol para capturas (solo admin)")
     @app_commands.describe(canal="Canal para capturas", rol="Rol de árbitro")
@@ -632,15 +632,6 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
         logger.info(f"Usuario {interaction.user.id} ejecutó /registraramistoso para equipo '{equipo}' a las {hora}")
         await interaction.response.defer(ephemeral=True)
 
-        try:
-            solicitud_id = db.add_solicitud_amistoso(guild_id, team1_id, team2_id, hora, fecha)
-            if solicitud_id is None:
-                await interaction.followup.send(embed=error("No se pudo crear la solicitud."), ephemeral=True)
-                return
-        except Exception as e:
-            await interaction.followup.send(embed=error(f"Error al crear la solicitud: {str(e)}"), ephemeral=True)
-            return
-
         manager_team = db.get_team_by_manager(interaction.guild.id, interaction.user.id)
         if manager_team:
             team = manager_team
@@ -649,7 +640,7 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
         else:
             captain_team = db.get_team_by_captain(interaction.guild.id, interaction.user.id)
             if captain_team:
-                    team = captain_team
+                team = captain_team
                 is_manager = False
                 is_captain_flag = True
             else:
@@ -669,25 +660,27 @@ async def ss(self, interaction: discord.Interaction, jugador: discord.User = Non
             await interaction.followup.send(embed=error("No puedes jugar contra tu propio equipo."), ephemeral=True)
             return
 
+        if not re.match(r"^\d{2}:\d{2}$", hora):
+            await interaction.followup.send(embed=error("Formato de hora inválido. Debe ser HH:MM."), ephemeral=True)
+            return
+
         try:
             hora_dt = datetime.strptime(hora, "%H:%M")
-            # Permitir 23:59 y 00:00 como excepciones
             if hora in ["23:59", "00:00"]:
                 pass  # Estas horas son válidas
             elif not (19 <= hora_dt.hour < 24 and hora_dt.minute % 30 == 0):
                 raise ValueError
         except ValueError:
-            await interaction.followup.send(embed=error("Hora inválida. Debe ser entre 19:00 y 00:00 en intervalos de 30 minutos, o 23:59/00:00."), ephemeral=True)
+            await interaction.followup.send(embed=error("Hora inválida. Debe ser entre 19:00 y 23:59 en intervalos de 30 minutos, o 00:00 (se convierte a 23:59 del día anterior)."), ephemeral=True)
             return
 
-    
         hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
         fecha = hoy
         if hora == "00:00":
             hora = "23:59"
             fecha_dt = datetime.strptime(fecha, "%Y-%m-%d") - timedelta(days=1)
             fecha = fecha_dt.strftime("%Y-%m-%d")
-    
+
         amistosos = db.get_amistosos_del_dia(interaction.guild.id, fecha)
         if any(a['hora'] == hora and (a['team1_id'] in [team['id'], solicitado_team['id']] or a['team2_id'] in [team['id'], solicitado_team['id']]) for a in amistosos):
             await interaction.followup.send(embed=error("Uno de los equipos ya tiene un amistoso programado a esa hora."), ephemeral=True)

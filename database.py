@@ -69,9 +69,9 @@ def create_tables(guild_id: int):
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
-            CREATE TABLE IF NOT EXISTS server_config (
+             CREATE TABLE IF NOT EXISTS server_config (
                 guild_id INTEGER PRIMARY KEY,
-                ss_channel_id INTEGER,
+                ss_channel_ids TEXT,  -- Cambiado de ss_channel_id INTEGER a TEXT para múltiples IDs
                 amistosos_channel_id INTEGER,
                 arbiter_role_id INTEGER
             );
@@ -193,17 +193,17 @@ def get_market_status(guild_id: int) -> str:
         database_logger.error(f"Error al obtener estado del mercado para guild {guild_id}: {e}")
         return 'closed'
 
-def set_server_settings(guild_id: int, ss_channel_id: int, arbiter_role_id: int):
+def set_server_settings(guild_id: int, ss_channel_ids: str, arbiter_role_id: int):
     db_path = get_db_path(guild_id)
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
             cur.execute(
-                "INSERT OR REPLACE INTO server_config (guild_id, ss_channel_id, arbiter_role_id) VALUES (?, ?, ?)",
-                (guild_id, ss_channel_id, arbiter_role_id)
+                "INSERT OR REPLACE INTO server_config (guild_id, ss_channel_ids, arbiter_role_id) VALUES (?, ?, ?)",
+                (guild_id, ss_channel_ids, arbiter_role_id)
             )
             conn.commit()
-            database_logger.info(f"Configuración establecida para guild {guild_id}: canal {ss_channel_id}, rol {arbiter_role_id}")
+            database_logger.info(f"Configuración establecida para guild {guild_id}: canales {ss_channel_ids}, rol {arbiter_role_id}")
     except sqlite3.Error as e:
         database_logger.error(f"Error al establecer configuración para guild {guild_id}: {e}")
 
@@ -233,11 +233,17 @@ def get_server_config(guild_id: int) -> dict:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute('SELECT * FROM server_config WHERE guild_id = ?', (guild_id,))
-            return _row_to_dict(cur.fetchone())
+            row = cur.fetchone()
+            if row:
+                config = dict(row)
+                # Convertir la cadena de IDs en una lista de enteros
+                config['ss_channel_ids'] = [int(id.strip()) for id in config['ss_channel_ids'].split(',')] if config['ss_channel_ids'] else []
+                return config
+            return None
     except sqlite3.Error as e:
         database_logger.error(f"Error al obtener configuración del servidor para guild {guild_id}: {e}")
         return None
-
+        
 def reset_transferable_status(guild_id: int):
     db_path = get_db_path(guild_id)
     try:

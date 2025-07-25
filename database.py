@@ -87,23 +87,43 @@ def create_tables(guild_id: int):
                 image_url TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES players(user_id)
             );
+            -- Nueva tabla para las instancias de tablas de amistosos
+            CREATE TABLE IF NOT EXISTS amistosos_tablas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            -- Nueva tabla para los horarios de cada tabla
+            CREATE TABLE IF NOT EXISTS amistosos_horarios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tabla_id INTEGER NOT NULL,
+                horario TEXT NOT NULL,
+                disponible INTEGER DEFAULT 1,
+                FOREIGN KEY(tabla_id) REFERENCES amistosos_tablas(id)
+            );
+            -- Tabla amistosos modificada
             CREATE TABLE IF NOT EXISTS amistosos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tabla_id INTEGER NOT NULL,
+                horario TEXT NOT NULL,
                 team1_id INTEGER NOT NULL,
                 team2_id INTEGER NOT NULL,
-                hora TEXT NOT NULL,
-                fecha TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'confirmed',
+                FOREIGN KEY(tabla_id) REFERENCES amistosos_tablas(id),
                 FOREIGN KEY(team1_id) REFERENCES teams(id),
                 FOREIGN KEY(team2_id) REFERENCES teams(id)
             );
+
+            -- Tabla solicitudes_amistosos modificada
             CREATE TABLE IF NOT EXISTS solicitudes_amistosos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tabla_id INTEGER NOT NULL,
+                horario TEXT NOT NULL,
                 solicitante_team_id INTEGER NOT NULL,
                 solicitado_team_id INTEGER NOT NULL,
-                hora TEXT NOT NULL,
-                fecha TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
+                FOREIGN KEY(tabla_id) REFERENCES amistosos_tablas(id),
                 FOREIGN KEY(solicitante_team_id) REFERENCES teams(id),
                 FOREIGN KEY(solicitado_team_id) REFERENCES teams(id)
             );
@@ -754,36 +774,6 @@ def get_team_by_captain(guild_id: int, captain_id: int) -> dict:
         database_logger.error(f"Error al obtener equipo por capitán {captain_id} en guild {guild_id}: {e}")
         return None
 
-def add_solicitud_amistoso(guild_id: int, solicitante_team_id: int, solicitado_team_id: int, hora: str, fecha: str, user_id: int) -> int:
-    db_path = get_db_path(guild_id)
-    team = get_team_by_id(guild_id, solicitante_team_id)
-    if not team or (team['manager_id'] != user_id and not is_captain(guild_id, solicitante_team_id, user_id)):
-        database_logger.warning(f"Usuario {user_id} no autorizado para solicitar amistoso para equipo {solicitante_team_id}")
-        return -1
-    if hora == "00:00":
-        hora = "23:59"
-        try:
-            fecha_dt = datetime.strptime(fecha, "%Y-%m-%d") - timedelta(days=1)
-            fecha = fecha_dt.strftime("%Y-%m-%d")
-        except ValueError as ve:
-            database_logger.error(f"Error al ajustar la fecha {fecha}: {ve}")
-            return -1
-    try:
-        with sqlite3.connect(db_path) as conn:
-            cur = conn.cursor()
-            cur.execute(
-                'INSERT INTO solicitudes_amistosos (solicitante_team_id, solicitado_team_id, hora, fecha, status) VALUES (?, ?, ?, ?, ?)',
-                (solicitante_team_id, solicitado_team_id, hora, fecha, 'pending')
-            )
-            conn.commit()
-            cur.execute('SELECT last_insert_rowid()')
-            solicitud_id = cur.fetchone()[0]
-            database_logger.info(f"Solicitud de amistoso creada con ID {solicitud_id} para guild {guild_id}")
-            return solicitud_id
-    except sqlite3.Error as e:
-        database_logger.error(f"Error al crear solicitud de amistoso para guild {guild_id}: {e}")
-        return -1
-
 def get_solicitud_by_id(guild_id: int, solicitud_id: int) -> dict:
     db_path = get_db_path(guild_id)
     try:
@@ -813,80 +803,6 @@ def update_solicitud_status(guild_id: int, solicitud_id: int, status: str, user_
             database_logger.info(f"Solicitud {solicitud_id} actualizada a estado {status} en guild {guild_id}")
     except sqlite3.Error as e:
         database_logger.error(f"Error al actualizar solicitud {solicitud_id} en guild {guild_id}: {e}")
-
-def add_amistoso(guild_id: int, team1_id: int, team2_id: int, hora: str, fecha: str) -> bool:
-    db_path = get_db_path(guild_id)
-    if hora == "00:00":
-        hora = "23:59"
-        try:
-            fecha_dt = datetime.strptime(fecha, "%Y-%m-%d") - timedelta(days=1)
-            fecha = fecha_dt.strftime("%Y-%m-%d")
-        except ValueError as ve:
-            database_logger.error(f"Error al ajustar la fecha {fecha}: {ve}")
-            return False
-    try:
-        with sqlite3.connect(db_path) as conn:
-            cur = conn.cursor()
-            cur.execute('INSERT INTO amistosos (team1_id, team2_id, hora, fecha) VALUES (?, ?, ?, ?)', 
-                       (team1_id, team2_id, hora, fecha))
-            conn.commit()
-            database_logger.info(f"Amistoso agregado entre equipo {team1_id} y {team2_id} a las {hora} el {fecha} en guild {guild_id}")
-            return True
-    except sqlite3.Error as e:
-        database_logger.error(f"Error al agregar amistoso en guild {guild_id}: {e}")
-        return False
-
-def get_amistosos_del_dia(guild_id: int, fecha: str) -> list:
-    db_path = get_db_path(guild_id)
-    try:
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute('SELECT * FROM amistosos WHERE fecha = ?', (fecha,))
-            return [dict(row) for row in cur.fetchall()]
-    except sqlite3.Error as e:
-        database_logger.error(f"Error al obtener amistosos del día {fecha} en guild {guild_id}: {e}")
-        return []
-
-def delete_amistosos_del_dia(guild_id: int, fecha: str) -> bool:
-    db_path = get_db_path(guild_id)
-    try:
-        with sqlite3.connect(db_path) as conn:
-            cur = conn.cursor()
-            cur.execute('DELETE FROM amistosos WHERE fecha = ?', (fecha,))
-            conn.commit()
-            database_logger.info(f"Amistosos del día {fecha} eliminados en guild {guild_id}.")
-            return True
-    except sqlite3.Error as e:
-        database_logger.error(f"Error al eliminar amistosos del día {fecha} en guild {guild_id}: {e}")
-        return False
-
-def get_amistoso_by_id(guild_id: int, amistoso_id: int) -> dict:
-    db_path = get_db_path(guild_id)
-    try:
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute('SELECT * FROM amistosos WHERE id = ?', (amistoso_id,))
-            return _row_to_dict(cur.fetchone())
-    except sqlite3.Error as e:
-        database_logger.error(f"Error al obtener amistoso {amistoso_id} en guild {guild_id}: {e}")
-        return None
-
-def delete_amistoso(guild_id: int, amistoso_id: int) -> bool:
-    db_path = get_db_path(guild_id)
-    try:
-        with sqlite3.connect(db_path) as conn:
-            cur = conn.cursor()
-            cur.execute('DELETE FROM amistosos WHERE id = ?', (amistoso_id,))
-            if cur.rowcount > 0:
-                conn.commit()
-                database_logger.info(f"Amistoso {amistoso_id} eliminado en guild {guild_id}.")
-                return True
-            return False
-    except sqlite3.Error as e:
-        database_logger.error(f"Error al eliminar amistoso {amistoso_id} en guild {guild_id}: {e}")
-        return False
 
 def get_players_by_team(guild_id: int, team_id: int) -> list:
     db_path = get_db_path(guild_id)
@@ -1164,9 +1080,137 @@ def export_database_to_file(guild_id: int = None):
     except sqlite3.Error as e:
         database_logger.error(f"Error al exportar base de datos para guild {guild_id or 'global'}: {e}")
         
+def generate_horarios(inicio: str, fin: str) -> list:
+    """Genera una lista de horarios en intervalos de 30 minutos."""
+    try:
+        inicio_dt = datetime.strptime(inicio, "%H:%M")
+        fin_dt = datetime.strptime(fin, "%H:%M")
+        if fin_dt < inicio_dt:
+            fin_dt += timedelta(days=1)  # Permitir cruce de medianoche
+        horarios = []
+        current = inicio_dt
+        while current <= fin_dt:
+            horarios.append(current.strftime("%H:%M"))
+            current += timedelta(minutes=30)
+        return horarios
+    except ValueError:
+        return []
+
+def create_amistosos_tabla(guild_id: int, inicio: str, fin: str) -> int:
+    """Crea una nueva tabla de amistosos con horarios especificados."""
+    horarios = generate_horarios(inicio, fin)
+    if not horarios:
+        return -1
+    try:
+        with sqlite3.connect(get_db_path(guild_id)) as conn:
+            cur = conn.cursor()
+            cur.execute('INSERT INTO amistosos_tablas (guild_id, created_at) VALUES (?, ?)', 
+                        (guild_id, datetime.now().isoformat()))
+            tabla_id = cur.lastrowid
+            for horario in horarios:
+                cur.execute('INSERT INTO amistosos_horarios (tabla_id, horario) VALUES (?, ?)', 
+                            (tabla_id, horario))
+            conn.commit()
+            database_logger.info(f"Tabla de amistosos {tabla_id} creada para guild {guild_id} con {len(horarios)} horarios.")
+            return tabla_id
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al crear tabla de amistosos para guild {guild_id}: {e}")
+        return -1
+
+def get_latest_amistosos_tabla(guild_id: int) -> dict:
+    """Obtiene la tabla de amistosos más reciente."""
+    try:
+        with sqlite3.connect(get_db_path(guild_id)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute('SELECT * FROM amistosos_tablas WHERE guild_id = ? ORDER BY id DESC LIMIT 1', (guild_id,))
+            return _row_to_dict(cur.fetchone())
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al obtener la última tabla para guild {guild_id}: {e}")
+        return None
+
+def get_horarios_for_tabla(tabla_id: int, guild_id: int) -> list:
+    """Obtiene los horarios de una tabla específica."""
+    try:
+        with sqlite3.connect(get_db_path(guild_id)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute('SELECT horario, disponible FROM amistosos_horarios WHERE tabla_id = ? ORDER BY horario', (tabla_id,))
+            return [{'horario': row['horario'], 'disponible': row['disponible']} for row in cur.fetchall()]
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al obtener horarios para tabla {tabla_id}: {e}")
+        return []
+
+def add_solicitud_amistoso(guild_id: int, solicitante_team_id: int, solicitado_team_id: int, horario: str, tabla_id: int, user_id: int) -> int:
+    """Agrega una solicitud de amistoso con el nuevo sistema."""
+    team = get_team_by_id(guild_id, solicitante_team_id)
+    if not team or (team['manager_id'] != user_id and not is_captain(guild_id, solicitante_team_id, user_id)):
+        database_logger.warning(f"Usuario {user_id} no autorizado para solicitar amistoso.")
+        return -1
+    try:
+        with sqlite3.connect(get_db_path(guild_id)) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                'INSERT INTO solicitudes_amistosos (tabla_id, horario, solicitante_team_id, solicitado_team_id, status) VALUES (?, ?, ?, ?, ?)',
+                (tabla_id, horario, solicitante_team_id, solicitado_team_id, 'pending')
+            )
+            solicitud_id = cur.lastrowid
+            conn.commit()
+            database_logger.info(f"Solicitud de amistoso creada con ID {solicitud_id} para guild {guild_id}")
+            return solicitud_id
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al crear solicitud de amistoso para guild {guild_id}: {e}")
+        return -1
+
+def add_amistoso(guild_id: int, team1_id: int, team2_id: int, horario: str, tabla_id: int) -> bool:
+    """Agrega un amistoso con el nuevo sistema."""
+    try:
+        with sqlite3.connect(get_db_path(guild_id)) as conn:
+            cur = conn.cursor()
+            cur.execute('INSERT INTO amistosos (tabla_id, horario, team1_id, team2_id) VALUES (?, ?, ?, ?)', 
+                        (tabla_id, horario, team1_id, team2_id))
+            cur.execute('UPDATE amistosos_horarios SET disponible = 0 WHERE tabla_id = ? AND horario = ?', 
+                        (tabla_id, horario))
+            conn.commit()
+            database_logger.info(f"Amistoso agregado entre equipo {team1_id} y {team2_id} a las {horario} en tabla {tabla_id}")
+            return True
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al agregar amistoso en guild {guild_id}: {e}")
+        return False
+
+def get_amistosos_for_tabla(guild_id: int, tabla_id: int) -> list:
+    """Obtiene los amistosos de una tabla específica."""
+    try:
+        with sqlite3.connect(get_db_path(guild_id)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute('SELECT * FROM amistosos WHERE tabla_id = ?', (tabla_id,))
+            return [dict(row) for row in cur.fetchall()]
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al obtener amistosos para tabla {tabla_id}: {e}")
+        return []
+
+def delete_amistoso(guild_id: int, amistoso_id: int) -> bool:
+    """Elimina un amistoso y libera el horario."""
+    try:
+        with sqlite3.connect(get_db_path(guild_id)) as conn:
+            cur = conn.cursor()
+            cur.execute('SELECT tabla_id, horario FROM amistosos WHERE id = ?', (amistoso_id,))
+            row = cur.fetchone()
+            if row:
+                tabla_id, horario = row['tabla_id'], row['horario']
+                cur.execute('DELETE FROM amistosos WHERE id = ?', (amistoso_id,))
+                cur.execute('UPDATE amistosos_horarios SET disponible = 1 WHERE tabla_id = ? AND horario = ?', 
+                            (tabla_id, horario))
+                conn.commit()
+                database_logger.info(f"Amistoso {amistoso_id} eliminado en guild {guild_id}.")
+                return True
+            return False
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al eliminar amistoso {amistoso_id}: {e}")
+        return False
+
 def initialize_global():
     create_global_tables()
 
 initialize_global()
-
-

@@ -435,31 +435,24 @@ class LeagueCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot:  # Ignorar mensajes de bots
+        if message.author.bot:
             logger.debug("Ignorando mensaje de un bot.")
             return
 
-        # Obtener la configuración del servidor
         config = db.get_server_config(message.guild.id)
-    
-     # Si no existe configuración o el canal no está en la lista de canales de capturas, ignorar
         if not config or not config.get('ss_channel_ids', []) or message.channel.id not in config['ss_channel_ids']:
             return
 
-        # Verificar que el rol de árbitro esté configurado
         if not config['arbiter_role_id']:
-            logger.warning(f"No se configura el rol de árbitro configurado en guild {message.guild.id}")
-            return  # Si no hay adjuntos adjuntos, ignorar mensajes con imágenes (ajusta según tu lógica)
-            if not message.attachments:
-                logger.debug(f"Mensaje en {message.channel.id} sin adjuntos, ignorado.")
-                return
+            logger.warning(f"No se encontró rol de árbitro configurado en guild {message.guild.id}")
+            return
+
+        if not message.attachments:
+            logger.debug(f"Mensaje en {message.channel.id} sin adjuntos, ignorado.")
+            return
 
         await asyncio.sleep(1)
         logger.info(f"Mensaje recibido en canal {message.channel.id} por {message.author} con adjuntos: {message.attachments}")
-
-        if not message.attachments:
-            await message.reply(embed=error("Por favor, envía una imagen."))
-            return
 
         attachment = message.attachments[0]
         if not attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
@@ -498,9 +491,12 @@ class LeagueCog(commands.Cog):
         time_match = time_pattern.search(text)
         screenshot_time = time_match.group(0).replace('.', ':') if time_match else None
 
-        review_channel = self.bot.get_channel(config['ss_channel_id'])
+        # Usar el primer canal de ss_channel_ids como canal de revisión (ajusta según tu lógica)
+        review_channel_id = config['ss_channel_ids'][0]  # Selecciona el primer canal configurado
+        review_channel = self.bot.get_channel(review_channel_id)
         arbiter_role = message.guild.get_role(config['arbiter_role_id'])
         if not review_channel or not arbiter_role:
+            logger.error(f"Canal de revisión {review_channel_id} o rol {config['arbiter_role_id']} no encontrado.")
             await message.reply(embed=error("Error interno: canal o rol no encontrado. Contacta a un admin."))
             return
 
@@ -526,7 +522,10 @@ class LeagueCog(commands.Cog):
             view = ReviewView(screenshot_id, message.guild.id)
             await review_channel.send(content=f"{arbiter_role.mention}", embed=embed, view=view)
             await message.reply(embed=error("Captura enviada a revisión: datos incompletos."))
-            
+
+        # Procesar comandos si aplica
+        await self.bot.process_commands(message)
+                
     
     @app_commands.command(name="test_command", description="Comando de prueba para verificar sincronización")
     async def test_command(self, interaction: discord.Interaction):
@@ -568,41 +567,57 @@ class LeagueCog(commands.Cog):
     description="Configura los canales y el rol para capturas (solo admin)"
     )
     @app_commands.describe(
-        canales="Menciona los canales para capturas (ejemplo: #canal1, #canal2)",
-        rol="Rol de árbitro"
+        canales="Menciona los canales para capturas (ejemplo: #canal1,#canal2 sin espacios)",
+        rol="Rol de árbitro (no puede ser @everyone)"
     )
     @app_commands.checks.has_permissions(administrator=True)
-    async def set_screenshot_settings(self, self, interaction: discord.Interaction, canales: str, rol: discord.Role):
-        # Separar las menciones de canales por comas
-        channel_mentions = [name.strip() for name in canales.split(',')]
+    async def set_screenshot_settings(self, interaction: discord.Interaction, canales: str, rol: discord.Role):
+        # Separar las menciones de canales por comas y limpiar espacios
+        channel_mentions = [name.strip() for name in canales.replace(' ', '').split(',')]
         channel_ids = []
-    
+
+        # Validar que el rol no sea @everyone
+        if rol == interaction.guild.default_role:
+            await interaction.response.send_message(
+                embed=error("El rol no puede ser @everyone. Selecciona un rol específico."),
+                ephemeral=True
+            )
+            return
+
         # Convertir menciones a IDs
         for mention in channel_mentions:
             # Extraer el ID de la mención (por ejemplo, <#123> -> 123)
-            try:
-                clean_id = re.match(r'^<#(\d+)>$', mention).group(1)
-                channel = interaction.guild.getChannel(clean_id)
-                if isinstance(channel, discord.TextChannel):
-                    channel_ids.append(channel.id)
-                else:
-                    await interaction.response.send_message(embed=error(f"Mención inválida: {mention} no es un canal de texto."), ephemeral=True)
-                    return
-            except (re.error, AttributeError):
-                await interaction.response.send_message(embed=error(f"Formato inválido: usa menciones como #canal1, #canal2."), ephemeral=True)
+            match = re.match(r'^<#(\d+)>$', mention)
+            if not match:
+                await interaction.response.send_message(
+                    embed=error(f"Formato inválido en '{mention}'. Usa menciones como #canal1,#canal2 sin espacios."),
+                    ephemeral=True
+                )
                 return
+            clean_id = match.group(1)
+            channel = interaction.guild.get_channel(int(clean_id))
+            if not isinstance(channel, discord.TextChannel):
+                await interaction.response.send_message(
+                    embed=error(f"Mención inválida: {mention} no es un canal de texto."),
+                    ephemeral=True
+                )
+                return
+            channel_ids.append(channel.id)
 
         # Verificar que haya al menos un canal válido
         if not channel_ids:
-            await interaction.response.send_message(embed=error("No se encontraron canales válidos.")., ephemeral=True)
+            await interaction.response.send_message(
+                embed=error("No se encontraron canales válidos."),
+                ephemeral=True
+            )
             return
 
         # Guardar los IDs como una cadena separada por comas
         ss_channel_ids_str = ','.join(map(str, channel_ids))
         db.set_server_settings(interaction.guild.id, ss_channel_ids_str, rol.id)
-    
+
         # Responder con los canales configurados
-        channel_mentions_str = ', '.join([f'<#{id}>' for id in [id for id in channel_ids]])
+        channel_mentions_str = ', '.join([f'<#{id}>' for id in channel_ids])
         await interaction.response.send_message(
             embed=success(f"Canales configurados: {channel_mentions_str}, rol: {rol.mention}"),
             ephemeral=True

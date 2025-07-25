@@ -1168,3 +1168,5 @@ def initialize_global():
     create_global_tables()
 
 initialize_global()
+
+

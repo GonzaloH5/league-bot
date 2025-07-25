@@ -18,6 +18,8 @@ from datetime import datetime, timezone, timedelta
 import pytesseract
 from discord import SelectOption
 from discord.interactions import Interaction
+import discord
+from discord import Embed, Color
 
 logger = logging.getLogger('bot')
 
@@ -88,6 +90,98 @@ class OfferView(discord.ui.View):
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: ui.Item):
         logger.error(f'Error en OfferView: {error}', exc_info=True)
         await interaction.response.send_message(embed=error("Ocurrió un error."), ephemeral=True)
+
+class ConfirmAmistosoView(ui.View):
+    def __init__(self, solicitud_id, bot, guild_id, cog):
+        super().__init__(timeout=None)
+        self.solicitud_id = solicitud_id
+        self.bot = bot
+        self.guild_id = guild_id
+        self.cog = cog
+
+    @ui.button(label="✅ Aceptar", style=discord.ButtonStyle.green)
+    async def accept(self, interaction: discord.Interaction, button: ui.Button):
+        solicitud = db.get_solicitud_by_id(self.guild_id, self.solicitud_id)
+        if not solicitud or solicitud['status'] != 'pending':
+            await interaction.response.send_message(embed=error("Solicitud no válida o ya procesada."), ephemeral=True)
+            return
+        team = db.get_team_by_manager(self.guild_id, interaction.user.id) or db.get_team_by_captain(self.guild_id, interaction.user.id)
+        if not team or team['id'] != solicitud['solicitado_team_id']:
+            await interaction.response.send_message(embed=error("No eres el manager ni capitán del equipo solicitado."), ephemeral=True)
+            return
+
+        amistosos = db.get_amistosos_for_tabla(self.guild_id, solicitud['tabla_id'])
+        if any(a['horario'] == solicitud['horario'] and (a['team1_id'] in [solicitud['solicitante_team_id'], solicitud['solicitado_team_id']] or a['team2_id'] in [solicitud['solicitante_team_id'], solicitud['solicitado_team_id']]) for a in amistosos):
+            await interaction.response.send_message(embed=error("Uno de los equipos ya tiene un amistoso en ese horario."), ephemeral=True)
+            return
+
+        db.update_solicitud_status(self.guild_id, self.solicitud_id, 'accepted', interaction.user.id)
+        db.add_amistoso(self.guild_id, solicitud['solicitante_team_id'], solicitud['solicitado_team_id'], solicitud['horario'], solicitud['tabla_id'])
+
+        # Notificaciones
+        solicitante_team = db.get_team_by_id(self.guild_id, solicitud['solicitante_team_id'])
+        solicitado_team = db.get_team_by_id(self.guild_id, solicitud['solicitado_team_id'])
+        embed = success(f"Amistoso programado: {solicitante_team['name']} vs {solicitado_team['name']} a las {solicitud['horario']}")
+        
+        # Enviar notificación al manager/capitán del equipo solicitante
+        solicitante_manager = self.bot.get_user(solicitante_team['manager_id'])
+        if solicitante_manager:
+            try:
+                await solicitante_manager.send(embed=embed)
+            except discord.HTTPException:
+                pass
+        
+        # Enviar notificación al canal de amistosos, si está configurado
+        config = db.get_server_config(self.guild_id)
+        if config and config['amistosos_channel_id']:
+            channel = self.bot.get_channel(config['amistosos_channel_id'])
+            if channel:
+                await channel.send(embed=embed)
+
+        await interaction.response.send_message(embed=success("Amistoso aceptado y programado."), ephemeral=True)
+
+        # Actualizar la tabla
+        if config and config['amistosos_channel_id']:
+            channel = self.bot.get_channel(config['amistosos_channel_id'])
+            if channel and self.cog.amistosos_message_id:
+                tabla = db.get_latest_amistosos_tabla(self.guild_id)
+                if tabla:
+                    tabla_texto = self.cog.generate_amistosos_table(self.guild_id, tabla['id'])
+                else:
+                    tabla_texto = "No hay tabla activa."
+                try:
+                    message = await channel.fetch_message(self.cog.amistosos_message_id)
+                    await message.edit(content=tabla_texto)
+                except discord.NotFound:
+                    self.cog.amistosos_message_id = None
+
+    @ui.button(label="❌ Rechazar", style=discord.ButtonStyle.red)
+    async def reject(self, interaction: discord.Interaction, button: ui.Button):
+        solicitud = db.get_solicitud_by_id(self.guild_id, self.solicitud_id)
+        if not solicitud or solicitud['status'] != 'pending':
+            await interaction.response.send_message(embed=error("Solicitud no válida o ya procesada."), ephemeral=True)
+            return
+        team = db.get_team_by_manager(self.guild_id, interaction.user.id) or db.get_team_by_captain(self.guild_id, interaction.user.id)
+        if not team or team['id'] != solicitud['solicitado_team_id']:
+            await interaction.response.send_message(embed=error("No eres el manager ni capitán del equipo solicitado."), ephemeral=True)
+            return
+
+        db.update_solicitud_status(self.guild_id, self.solicitud_id, 'rejected', interaction.user.id)
+
+        # Notificaciones
+        solicitante_team = db.get_team(self.guild_id, solicitud['solicitante_team_id'])
+        solicitado_team = db.get_team(self.guild_id, solicitud['solicitado_team_id'])
+        embed = error(f"Solicitud de amistoso rechazada: {solicitante_team['name']} vs {solicitado_team['name']} a las {solicitud['horario']}")
+        
+        # Enviar notificación al manager/capitán del equipo solicitante
+        solicitante_manager = self.bot.get_user(solicitante_team['manager_id'])
+        if solicitante_manager:
+            try:
+                await solicitante_manager.send(embed=embed)
+            except discord.HTTPException:
+                pass
+
+        await interaction.response.send_message(embed=success("Solicitud de amistoso rechazada."), ephemeral=True)
 
 class TeamBookView(ui.View):
     def __init__(self, teams: list, user_id: int, bot: commands.Bot, guild_id: int):
@@ -165,13 +259,12 @@ class EliminarAmistosoSelect(ui.Select):
         self.guild_id = guild_id
         options = [
             SelectOption(
-                label=f"{db.get_team_by_id(self.guild_id, a['team1_id'])['name']} vs {db.get_team_by_id(self.guild_id, a['team2_id'])['name']} ({a['hora']})",
+                label=f"{db.get_team_by_id(self.guild_id, a['team1_id'])['name']} vs {db.get_team_by_id(self.guild_id, a['team2_id'])['name']} ({a['horario']})",
                 value=str(a['id'])
             ) for a in amistosos
         ]
         if not options:
-            options = [SelectOption(
-                label="No hay amistosos para eliminar", value="none")]
+            options = [SelectOption(label="No hay amistosos para eliminar", value="none")]
         super().__init__(placeholder="Selecciona un amistoso para eliminar", options=options)
 
     async def callback(self, interaction: Interaction):
@@ -193,8 +286,7 @@ class EliminarAmistosoSelect(ui.Select):
             return
 
         db.delete_amistoso(self.guild_id, amistoso_id)
-        logger.info(
-            f"Amistoso ID {amistoso_id} eliminado por {interaction.user.name} ({interaction.user.id})")
+        logger.info(f"Amistoso ID {amistoso_id} eliminado por {interaction.user.name} ({interaction.user.id})")
 
         team1 = db.get_team_by_id(self.guild_id, amistoso['team1_id'])
         team2 = db.get_team_by_id(self.guild_id, amistoso['team2_id'])
@@ -211,20 +303,20 @@ class EliminarAmistosoSelect(ui.Select):
                 recipient = self.bot.get_user(recipient_id)
                 if recipient:
                     try:
-                        await recipient.send(embed=info(f"El amistoso entre {team1['name']} y {team2['name']} a las {amistoso['hora']} fue eliminado por {interaction.user.name} en el servidor {interaction.guild.name}."))
-                        logger.info(
-                            f"Notificación de eliminación enviada a {recipient.name} ({recipient_id})")
+                        await recipient.send(embed=info(f"El amistoso entre {team1['name']} y {team2['name']} en el horario {amistoso['horario']} fue eliminado por {interaction.user.name} en el servidor {interaction.guild.name}."))
+                        logger.info(f"Notificación de eliminación enviada a {recipient.name} ({recipient_id})")
                     except discord.Forbidden:
-                        logger.warning(
-                            f"No se pudo notificar a {recipient.name} ({recipient_id}) - DMs desactivados")
+                        logger.warning(f"No se pudo notificar a {recipient.name} ({recipient_id}) - DMs desactivados")
                     except discord.HTTPException as e:
-                        logger.error(
-                            f"Error HTTP al notificar a {recipient.name} ({recipient_id}): {e}")
+                        logger.error(f"Error HTTP al notificar a {recipient.name} ({recipient_id}): {e}")
 
-        hoy = datetime.now(
-            self.bot.cogs['LeagueCog'].tz_minus_3).strftime("%Y-%m-%d")
-        amistosos = db.get_amistosos_del_dia(self.guild_id, hoy)
-        table = self.generate_amistosos_table(interaction.guild.id, amistosos)
+        # Actualizar la tabla de amistosos
+        tabla = db.get_latest_amistosos_tabla(self.guild_id)
+        if tabla:
+                table = cog.generate_amistosos_table(self.guild_id, tabla['id'])  # Call on cog instance
+        else:
+            table = "No hay tabla activa."
+
         config = db.get_server_config(self.guild_id)
         if config and config['amistosos_channel_id']:
             channel = self.bot.get_channel(config['amistosos_channel_id'])
@@ -233,104 +325,11 @@ class EliminarAmistosoSelect(ui.Select):
                     message = await channel.fetch_message(self.bot.cogs['LeagueCog'].amistosos_message_id)
                     await message.edit(content=table)
                 except discord.NotFound:
-                    logger.warning(
-                        f"Mensaje {self.bot.cogs['LeagueCog'].amistosos_message_id} no encontrado para actualizar tabla de amistosos")
+                    logger.warning(f"Mensaje {self.bot.cogs['LeagueCog'].amistosos_message_id} no encontrado para actualizar tabla de amistosos")
                 except discord.Forbidden:
-                    logger.error(
-                        f"Permisos insuficientes para editar mensaje en canal {config['amistosos_channel_id']}")
+                    logger.error(f"Permisos insuficientes para editar mensaje en canal {config['amistosos_channel_id']}")
 
         await interaction.response.send_message(embed=success("Amistoso eliminado correctamente."), ephemeral=True)
-
-class ConfirmAmistosoView(ui.View):
-    def __init__(self, solicitud_id: int, bot: commands.Bot, guild_id: int):
-        super().__init__(timeout=None)
-        self.solicitud_id = solicitud_id
-        self.bot = bot
-        self.guild_id = guild_id
-
-    @ui.button(label="✅ Aceptar", style=discord.ButtonStyle.green)
-    async def accept(self, interaction: discord.Interaction, button: ui.Button):
-        solicitud = db.get_solicitud_by_id(self.guild_id, self.solicitud_id)
-        if not solicitud or solicitud['status'] != 'pending':
-            await interaction.response.send_message(embed=error("Solicitud no válida o ya procesada."), ephemeral=True)
-            return
-        manager_team = db.get_team_by_manager(self.guild_id, interaction.user.id)
-        if manager_team:
-            team = manager_team
-        else:
-            team = db.get_team_by_captain(self.guild_id, interaction.user.id)
-        if not team or team['id'] != solicitud['solicitado_team_id']:
-            await interaction.response.send_message(embed=error("No eres el manager ni capitán del equipo solicitado."), ephemeral=True)
-            return
-
-        hoy = datetime.now(
-            self.bot.cogs['LeagueCog'].tz_minus_3).strftime("%Y-%m-%d")
-        amistosos_hoy = db.get_amistosos_del_dia(self.guild_id, hoy)
-        if any(a['hora'] == solicitud['hora'] and (a['team1_id'] in [solicitud['solicitante_team_id'], solicitud['solicitado_team_id']] or a['team2_id'] in [solicitud['solicitante_team_id'], solicitud['solicitado_team_id']]) for a in amistosos_hoy):
-            logger.warning(
-                f"Conflicto de horario a las {solicitud['hora']} para uno de los equipos")
-            await interaction.response.send_message(embed=error("Uno de los equipos ya tiene un amistoso programado a esa hora."), ephemeral=True)
-            return
-
-        db.update_solicitud_status(
-            self.guild_id, self.solicitud_id, 'accepted', interaction.user.id)
-        db.add_amistoso(self.guild_id, solicitud['solicitante_team_id'],
-                        solicitud['solicitado_team_id'], solicitud['hora'], solicitud['fecha'])
-
-        manager_id = team['manager_id']
-        captains = db.get_captains(self.guild_id, team['id'])
-        recipients = set(
-            [manager_id] + captains) if manager_id else set(captains)
-        for recipient_id in recipients:
-            if recipient_id != interaction.user.id:
-                recipient = self.bot.get_user(recipient_id)
-                if recipient:
-                    try:
-                        await recipient.send(embed=info(f"El amistoso contra {db.get_team_by_id(self.guild_id, solicitud['solicitante_team_id'])['name']} a las {solicitud['hora']} fue aceptado por {interaction.user.name} en el servidor {interaction.guild.name}."))
-                        logger.info(
-                            f"Notificación de aceptación enviada a {recipient.name} ({recipient_id})")
-                    except discord.Forbidden:
-                        logger.warning(
-                            f"No se pudo notificar a {recipient.name} ({recipient_id}) - DMs desactivados")
-                    except discord.HTTPException as e:
-                        logger.error(
-                            f"Error HTTP al notificar a {recipient.name} ({recipient_id}): {e}")
-
-        await interaction.response.send_message(embed=success("Amistoso aceptado y programado."), ephemeral=True)
-
-        amistosos = db.get_amistosos_del_dia(self.guild_id, hoy)
-        table = self.generate_amistosos_table(interaction.guild.id, amistosos)
-        config = db.get_server_config(self.guild_id)
-        if config and config['amistosos_channel_id']:
-            channel = self.bot.get_channel(config['amistosos_channel_id'])
-            if channel and self.bot.cogs['LeagueCog'].amistosos_message_id:
-                try:
-                    message = await channel.fetch_message(self.bot.cogs['LeagueCog'].amistosos_message_id)
-                    await message.edit(content=table)
-                except discord.NotFound:
-                    logger.warning(
-                        f"Mensaje {self.bot.cogs['LeagueCog'].amistosos_message_id} no encontrado para actualizar tabla de amistosos")
-                except discord.Forbidden:
-                    logger.error(
-                        f"Permisos insuficientes para editar mensaje en canal {config['amistosos_channel_id']}")
-
-    @ui.button(label="❌ Rechazar", style=discord.ButtonStyle.red)
-    async def reject(self, interaction: discord.Interaction, button: ui.Button):
-        solicitud = db.get_solicitud_by_id(self.guild_id, self.solicitud_id)
-        if not solicitud or solicitud['status'] != 'pending':
-            await interaction.response.send_message(embed=error("Solicitud no válida o ya procesada."), ephemeral=True)
-            return
-        manager_team = db.get_team_by_manager(self.guild_id, interaction.user.id)
-        if manager_team:
-            team = manager_team
-        else:
-            team = db.get_team_by_captain(self.guild_id, interaction.user.id)
-        if not team or team['id'] != solicitud['solicitado_team_id']:
-            await interaction.response.send_message(embed=error("No eres el manager ni capitán del equipo solicitado."), ephemeral=True)
-            return
-        db.update_solicitud_status(
-            self.guild_id, self.solicitud_id, 'rejected', interaction.user.id)
-        await interaction.response.send_message(embed=info("Solicitud de amistoso rechazada."), ephemeral=True)
 
 class PaginationView(View):
     def __init__(self, players, items_per_page=10):
@@ -418,20 +417,19 @@ class LeagueCog(commands.Cog):
         self.tz_minus_3 = timezone(timedelta(hours=-3))
         self.amistosos_message_id = None
 
-    def generate_amistosos_table(self, guild_id: int, amistosos: list) -> str:
-        horarios = ["19:00", "19:30", "20:00", "20:30", "21:00", "21:30", "22:00", "22:30", "23:00", "23:30", "23:59"]
-        hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
-        partidos_por_horario = {h: "Disponible" for h in horarios}
+    def generate_amistosos_table(self, guild_id: int, tabla_id: int) -> str:
+        horarios = db.get_horarios_for_tabla(tabla_id, guild_id)
+        amistosos = db.get_amistosos_for_tabla(guild_id, tabla_id)
+        partidos_por_horario = {h['horario']: "Disponible" if h['disponible'] else "Ocupado" for h in horarios}
         for amistoso in amistosos:
-            if amistoso['fecha'] == hoy or (amistoso['hora'] == "23:59" and amistoso['fecha'] == (datetime.now(self.tz_minus_3) - timedelta(days=1)).strftime("%Y-%m-%d")):
-                team1 = db.get_team_by_id(guild_id, amistoso['team1_id'])
-                team2 = db.get_team_by_id(guild_id, amistoso['team2_id'])
-                if team1 and team2:
-                    partidos_por_horario[amistoso['hora']] = f"**{team1['name']} vs {team2['name']}** ⚽"
-        table = f"```\n📅 Amistosos del {hoy} 📅\n⚽ Horario | Partido ⚽\n{'═'*30}\n"
-        for hora in horarios:
-            partido = partidos_por_horario[hora]
-            table += f"⚪ {hora} | {partido} 🟢\n" if partido == "Disponible" else f"🏟️ {hora} | {partido}\n"
+            team1 = db.get_team_by_id(guild_id, amistoso['team1_id'])
+            team2 = db.get_team_by_id(guild_id, amistoso['team2_id'])
+            if team1 and team2:
+                partidos_por_horario[amistoso['horario']] = f"**{team1['name']} vs {team2['name']}** ⚽"
+        table = f"```\n📅 Tabla de Amistosos (ID: {tabla_id}) 📅\n⚽ Horario | Partido ⚽\n{'═'*30}\n"
+        for horario in [h['horario'] for h in horarios]:
+            partido = partidos_por_horario[horario]
+            table += f"⚪ {horario} | {partido} 🟢\n" if partido == "Disponible" else f"🏟️ {horario} | {partido}\n"
         table += "```\n"
         return table
 
@@ -565,19 +563,6 @@ class LeagueCog(commands.Cog):
         db.set_server_settings(interaction.guild.id, canal.id, rol.id)
         await interaction.response.send_message(embed=success(f"Canal configurado como {canal.mention} y rol como {rol.mention}."), ephemeral=True)
 
-    @app_commands.command(name="quitaramistoso", description="Quitar un amistoso programado (solo admin)")
-    @app_commands.describe(hora="Hora del amistoso a eliminar (HH:MM)")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def quitaramistoso(self, interaction: discord.Interaction, hora: str):
-        hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
-        amistosos = db.get_amistosos_del_dia(interaction.guild.id, hoy)
-        for amistoso in amistosos:
-            if amistoso['hora'] == hora:
-                db.delete_amistoso(interaction.guild.id, amistoso['id'])
-                await interaction.response.send_message(embed=success(f"Amistoso a las {hora} eliminado."), ephemeral=True)
-                return
-        await interaction.response.send_message(embed=error("No se encontró un amistoso a esa hora."), ephemeral=True)
-
     @app_commands.command(name="asignarcanalamistosos", description="Asignar el canal para tablas de amistosos (solo admin)")
     @app_commands.describe(canal="Canal para tablas de amistosos")
     @app_commands.checks.has_permissions(administrator=True)
@@ -593,143 +578,6 @@ class LeagueCog(commands.Cog):
              await interaction.response.send_message(embed=success(f"Equipo {nombre} creado en división {division}."), ephemeral=True)
          else:
              await interaction.response.send_message(embed=error("El equipo ya existe o el manager ya está asignado a otro equipo."), ephemeral=True)
-
-    @app_commands.command(name="amistosos", description="Ver la tabla de amistosos de hoy")
-    async def amistosos(self, interaction: discord.Interaction):
-        hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
-        amistosos = db.get_amistosos_del_dia(interaction.guild.id, hoy)
-        table = self.generate_amistosos_table(interaction.guild.id, amistosos)
-        await interaction.response.send_message(table, ephemeral=True)
-
-    @app_commands.command(name="creartablaamistosos", description="Generar la tabla diaria de amistosos (solo admin)")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def creartablaamistosos(self, interaction: discord.Interaction):
-
-        config = db.get_server_config(interaction.guild.id)
-        if not config or not config['amistosos_channel_id']:
-            await interaction.response.send_message(embed=error("No se ha configurado el canal de amistosos."), ephemeral=True)
-            return
-
-        channel = self.bot.get_channel(config['amistosos_channel_id'])
-        if not channel:
-            await interaction.response.send_message(embed=error("Canal de amistosos no encontrado."), ephemeral=True)
-            return
-
-        hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
-        amistosos = db.get_amistosos_del_dia(interaction.guild.id, hoy)
-        table = self.generate_amistosos_table(interaction.guild.id, amistosos)
-
-        message = await channel.send(table)
-        self.amistosos_message_id = message.id  # Guarda el ID si quieres actualizar luego
-        await interaction.response.send_message(embed=success("Tabla de amistosos generada."), ephemeral=True)
-
-    @app_commands.command(name="registraramistoso", description="Solicitar un amistoso contra otro equipo")
-    @app_commands.describe(
-        equipo="Nombre del equipo contrario",
-        hora="Hora del amistoso (HH:MM)"
-    )
-    async def registraramistoso(self, interaction: discord.Interaction, equipo: str, hora: str):
-        logger.info(f"Usuario {interaction.user.id} ejecutó /registraramistoso para equipo '{equipo}' a las {hora}")
-        await interaction.response.defer(ephemeral=True)
-
-        manager_team = db.get_team_by_manager(interaction.guild.id, interaction.user.id)
-        if manager_team:
-            team = manager_team
-            is_manager = True
-            is_captain_flag = db.is_captain(interaction.guild.id, team['id'], interaction.user.id)
-        else:
-            captain_team = db.get_team_by_captain(interaction.guild.id, interaction.user.id)
-            if captain_team:
-                team = captain_team
-                is_manager = False
-                is_captain_flag = True
-            else:
-                team = None
-                is_manager = False
-                is_captain_flag = False
-
-        if not (is_manager or is_captain_flag):
-            await interaction.followup.send(embed=error("No eres manager ni capitán de ningún equipo."), ephemeral=True)
-            return
-
-        solicitado_team = db.get_team_by_name(interaction.guild.id, equipo)
-        if not solicitado_team:
-            await interaction.followup.send(embed=error("Equipo no encontrado."), ephemeral=True)
-            return
-        if solicitado_team['id'] == team['id']:
-            await interaction.followup.send(embed=error("No puedes jugar contra tu propio equipo."), ephemeral=True)
-            return
-
-        if not re.match(r"^\d{2}:\d{2}$", hora):
-            await interaction.followup.send(embed=error("Formato de hora inválido. Debe ser HH:MM."), ephemeral=True)
-            return
-
-        try:
-            hora_dt = datetime.strptime(hora, "%H:%M")
-            if hora in ["23:59", "00:00"]:
-                pass  # Estas horas son válidas
-            elif not (19 <= hora_dt.hour < 24 and hora_dt.minute % 30 == 0):
-                raise ValueError
-        except ValueError:
-            await interaction.followup.send(embed=error("Hora inválida. Debe ser entre 19:00 y 23:59 en intervalos de 30 minutos, o 00:00 (se convierte a 23:59 del día anterior)."), ephemeral=True)
-            return
-
-        hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
-        fecha = hoy
-        if hora == "00:00":
-            hora = "23:59"
-            fecha_dt = datetime.strptime(fecha, "%Y-%m-%d") - timedelta(days=1)
-            fecha = fecha_dt.strftime("%Y-%m-%d")
-
-        amistosos = db.get_amistosos_del_dia(interaction.guild.id, fecha)
-        if any(a['hora'] == hora and (a['team1_id'] in [team['id'], solicitado_team['id']] or a['team2_id'] in [team['id'], solicitado_team['id']]) for a in amistosos):
-            await interaction.followup.send(embed=error("Uno de los equipos ya tiene un amistoso programado a esa hora."), ephemeral=True)
-            return
-
-        solicitud_id = db.add_solicitud_amistoso(interaction.guild.id, team['id'], solicitado_team['id'], hora, fecha, interaction.user.id)
-        if solicitud_id == -1:
-            await interaction.followup.send(embed=error("Error al registrar la solicitud de amistoso."), ephemeral=True)
-            return
-
-        manager_id = solicitado_team['manager_id']
-        captains = db.get_captains(interaction.guild.id, solicitado_team['id'])
-        recipients = set([manager_id] + captains) if manager_id else set(captains)
-
-        if not recipients:
-            await interaction.followup.send(embed=error("El equipo solicitado no tiene manager ni capitanes."), ephemeral=True)
-            return
-
-        failed_dms = []
-        for recipient_id in recipients:
-            recipient = self.bot.get_user(recipient_id)
-            if recipient:
-                try:
-                    view = ConfirmAmistosoView(solicitud_id, self.bot, interaction.guild.id)
-                    await recipient.send(embed=info(f"Solicitud de amistoso de {team['name']} para hoy a las {hora}."), view=view)
-                except discord.Forbidden:
-                    failed_dms.append(recipient.name)
-                except discord.HTTPException as e:
-                    logger.error(f"Error HTTP al enviar DM a {recipient.name} ({recipient_id}): {e}")
-                    failed_dms.append(recipient.name)
-
-        if failed_dms:
-            await interaction.followup.send(embed=success(f"Solicitud enviada, pero no se pudo notificar a: {', '.join(failed_dms)}."), ephemeral=True)
-        else:
-            await interaction.followup.send(embed=success("Solicitud de amistoso enviada."), ephemeral=True)
-
-    @app_commands.command(name="resetearamistosos", description="Reiniciar la tabla de amistosos (solo admin)")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def resetearamistosos(self, interaction: discord.Interaction):
-        hoy = datetime.now(self.tz_minus_3).strftime("%Y-%m-%d")
-        db.delete_amistosos_del_dia(hoy)
-        channel = self.bot.get_channel(self.amistosos_channel_id)
-        if not channel or not self.amistosos_message_id:
-            await interaction.response.send_message(embed=error("Canal o mensaje de amistosos no configurado."), ephemeral=True)
-            return
-        table = self.generate_amistosos_table([])
-        message = await channel.fetch_message(self.amistosos_message_id)
-        await message.edit(content=table)
-        await interaction.response.send_message(embed=success("Tabla de amistosos reiniciada."), ephemeral=True)
 
     @app_commands.command(name="asignarmanager", description="Asignar un manager a un equipo")
     @app_commands.describe(equipo="Nombre del equipo", manager="Usuario a asignar")
@@ -1019,6 +867,101 @@ class LeagueCog(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message(embed=error("No puedo enviar DM al jugador."), ephemeral=True)
 
+    @app_commands.command(name="creartabla", description="Crear una nueva tabla de amistosos con horarios especificados")
+    @app_commands.describe(inicio="Hora de inicio (HH:MM)", fin="Hora de fin (HH:MM)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def creartabla(self, interaction: discord.Interaction, inicio: str, fin: str):
+        if not re.match(r"^\d{2}:\d{2}$", inicio) or not re.match(r"^\d{2}:\d{2}$", fin):
+            await interaction.response.send_message(embed=error("Formato de hora inválido. Debe ser HH:MM."), ephemeral=True)
+            return
+        tabla_id = db.create_amistosos_tabla(interaction.guild.id, inicio, fin)
+        if tabla_id == -1:
+            await interaction.response.send_message(embed=error("Error al crear la tabla. Verifica los horarios."), ephemeral=True)
+            return
+        await interaction.response.send_message(embed=success(f"Tabla de amistosos creada con ID {tabla_id}."), ephemeral=True)
+
+      # Opcional: Publicar la tabla inicial
+        config = db.get_server_config(interaction.guild.id)
+        if config and config['amistosos_channel_id']:
+            channel = self.bot.get_channel(config['amistosos_channel_id'])
+            if channel:
+                table = self.generate_amistosos_table(interaction.guild.id, tabla_id)
+                message = await channel.send(table)
+                self.amistosos_message_id = message.id
+
+    @app_commands.command(name="registraramistoso", description="Solicitar un amistoso contra otro equipo en un horario específico")
+    @app_commands.describe(equipo="Nombre del equipo contrario", horario="Horario del amistoso (HH:MM)")
+    async def registraramistoso(self, interaction: discord.Interaction, equipo: str, horario: str):
+        await interaction.response.defer(ephemeral=True)
+
+        # Verificar si el usuario es manager o capitán
+        manager_team = db.get_team_by_manager(interaction.guild.id, interaction.user.id)
+        captain_team = db.get_team_by_captain(interaction.guild.id, interaction.user.id)
+        team = manager_team or captain_team
+        if not team:
+            await interaction.followup.send(embed=error("No eres manager ni capitán de ningún equipo."), ephemeral=True)
+            return
+
+        # Obtener la tabla más reciente
+        tabla = db.get_latest_amistosos_tabla(interaction.guild.id)
+        if not tabla:
+            await interaction.followup.send(embed=error("No hay una tabla de amistosos activa."), ephemeral=True)
+            return
+
+        # Verificar si el horario existe en la tabla
+        horarios = db.get_horarios_for_tabla(tabla['id'], interaction.guild.id)
+        horario_info = next((h for h in horarios if h['horario'] == horario), None)
+        if not horario_info:
+            await interaction.followup.send(embed=error(f"El horario {horario} no está en la tabla actual."), ephemeral=True)
+            return
+        if not horario_info['disponible']:
+            await interaction.followup.send(embed=error(f"El horario {horario} ya está ocupado."), ephemeral=True)
+            return
+
+        # Verificar el equipo solicitado
+        solicitado_team = db.get_team_by_name(interaction.guild.id, equipo)
+        if not solicitado_team:
+            await interaction.followup.send(embed=error("Equipo no encontrado."), ephemeral=True)
+            return
+        if solicitado_team['id'] == team['id']:
+            await interaction.followup.send(embed=error("No puedes jugar contra tu propio equipo."), ephemeral=True)
+            return
+
+        # Verificar conflictos
+        amistosos = db.get_amistosos_for_tabla(interaction.guild.id, tabla['id'])
+        if any(a['horario'] == horario and (a['team1_id'] in [team['id'], solicitado_team['id']] or a['team2_id'] in [team['id'], solicitado_team['id']]) for a in amistosos):
+            await interaction.followup.send(embed=error("Uno de los equipos ya tiene un amistoso en ese horario."), ephemeral=True)
+            return
+
+            # Registrar la solicitud
+        solicitud_id = db.add_solicitud_amistoso(interaction.guild.id, team['id'], solicitado_team['id'], horario, tabla['id'], interaction.user.id)
+        if solicitud_id == -1:
+            await interaction.followup.send(embed=error("Error al registrar la solicitud."), ephemeral=True)
+            return
+
+        # Enviar notificación
+        manager_id = solicitado_team['manager_id']
+        captains = db.get_captains(interaction.guild.id, solicitado_team['id'])
+        recipients = set([manager_id] + captains) if manager_id else set(captains)
+        if not recipients:
+            await interaction.followup.send(embed=error("El equipo solicitado no tiene manager ni capitanes."), ephemeral=True)
+            return
+
+        failed_dms = []
+        for recipient_id in recipients:
+            recipient = self.bot.get_user(recipient_id)
+            if recipient:
+                try:
+                    view = ConfirmAmistosoView(solicitud_id, self.bot, interaction.guild.id, cog=self)
+                    await recipient.send(embed=info(f"Solicitud de amistoso de {team['name']} para el horario {horario}."), view=view)
+                except discord.Forbidden:
+                    failed_dms.append(recipient.name)
+
+        if failed_dms:
+            await interaction.followup.send(embed=success(f"Solicitud enviada, pero no se pudo notificar a: {', '.join(failed_dms)}."), ephemeral=True)
+        else:
+            await interaction.followup.send(embed=success("Solicitud de amistoso enviada."), ephemeral=True)
+
     @app_commands.command(name="sancionar", description="Sancionar a un jugador")
     @app_commands.describe(jugador="Jugador objetivo")
     @app_commands.checks.has_permissions(administrator=True)
@@ -1197,101 +1140,110 @@ class LeagueCog(commands.Cog):
     # Comando de ayuda personalizado
     @app_commands.command(name="help", description="Muestra los comandos disponibles del bot")
     async def help_command(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🧾 Comandos del Bot",
-            description="Comandos organizados por categoría para gestionar la liga y amistosos.",
-            color=discord.Color.from_rgb(102, 255, 178)  # Verde claro
-        )
-        embed.set_thumbnail(url=self.bot.user.avatar.url if self.bot.user.avatar else discord.utils.MISSING)
-        embed.set_footer(text=f"{self.bot.user.name}", icon_url=self.bot.user.avatar.url if self.bot.user.avatar else discord.utils.MISSING)
+        try:
+            embed = Embed(
+                title="🧾 Comandos del Bot",
+                description="Comandos organizados por categoría para gestionar la liga y amistosos.",
+                color=Color.from_rgb(102, 255, 178)  # Verde claro
+            )
+            # Safely handle avatar
+            avatar_url = self.bot.user.avatar.url if self.bot.user.avatar else None
+            embed.set_thumbnail(url=avatar_url or discord.utils.MISSING)
+            embed.set_footer(text=self.bot.user.name, icon_url=avatar_url or discord.utils.MISSING)
 
-        # Comandos Generales
-        general_commands = [
-            ("help", "Muestra esta lista de comandos."),
-            ("amistosos", "Mostrar la tabla de amistosos del día."),
-            ("agenteslibres", "Mostrar la lista de agentes libres."),
-            ("ofertaspendientes", "Ver todas las ofertas pendientes."),
-            ("perfil", "Ver el perfil de un jugador."),
-            ("equipo", "Ver información de un equipo."),
-            ("players", "Ver jugadores de un equipo."),
-            ("historialjugador", "Ver historial de transferencias de un jugador."),
-            ("historialequipo", "Ver historial de transferencias de un equipo."),
-            ("equiposregistrados", "Ver todos los equipos registrados, opcionalmente por división."),
-            ("mercado", "Ver jugadores transferibles."),
-            ("balance", "Ver el balance de un club."),
-        ]
-        general_field = "\n".join([f"**`/{cmd}`** - {desc}" for cmd, desc in general_commands])
-        embed.add_field(name="📋 General", value=general_field, inline=False)
+            # Comandos Generales
+            general_commands = [
+                ("help", "Muestra esta lista de comandos."),
+                ("amistosos", "Mostrar la tabla de amistosos del día."),
+                ("agenteslibres", "Mostrar la lista de agentes libres."),
+                ("ofertaspendientes", "Ver todas las ofertas pendientes."),
+                ("perfil", "Ver el perfil de un jugador."),
+                ("equipo", "Ver información de un equipo."),
+                ("players", "Ver jugadores de un equipo."),
+                ("historialjugador", "Ver historial de transferencias de un jugador."),
+                ("historialequipo", "Ver historial de transferencias de un equipo."),
+                ("equiposregistrados", "Ver todos los equipos registrados, opcionalmente por división."),
+                ("mercado", "Ver jugadores transferibles."),
+                ("balance", "Ver el balance de un club."),
+            ]
+            general_field = "\n".join([f"**`/{cmd}`** - {desc}" for cmd, desc in general_commands])
+            embed.add_field(name="📋 General", value=general_field or "Ningún comando disponible.", inline=False)
 
-        # Comandos de Manager (accesibles para managers y capitanes)
-        manager_commands = [
-            ("fichajes", "Ver los últimos fichajes realizados en la liga."),
-            ("agregarmercado", "Marcar a un jugador como transferible y opcionalmente modificar su cláusula."),
-            ("quitarmercado", "Quitar a un jugador del mercado."),
-            ("quitarjugador", "Enviar a un jugador a agentes libres."),
-            ("pagaclausula", "Pagar la cláusula de un jugador."),
-            ("cancelaroferta", "Cancelar una oferta enviada."),
-            ("ofertarcontrato", "Enviar una oferta de contrato a un jugador."),
-            ("registraramistoso", "Solicitar un amistoso contra otro equipo. (Managers/Capitanes)"),
-            ("eliminaramistoso", "Eliminar un amistoso programado para hoy. (Managers/Capitanes)")
-        ]
-        manager_field = "\n".join([f"**`/{cmd}`** - {desc}" for cmd, desc in manager_commands])
-        embed.add_field(name="⚽ Manager", value=manager_field, inline=False)
+            # Comandos de Manager
+            manager_commands = [
+                ("fichajes", "Ver los últimos fichajes realizados en la liga."),
+                ("agregarmercado", "Marcar a un jugador como transferible y opcionalmente modificar su cláusula."),
+                ("quitarmercado", "Quitar a un jugador del mercado."),
+                ("quitarjugador", "Enviar a un jugador a agentes libres."),
+                ("pagaclausula", "Pagar la cláusula de un jugador."),
+                ("cancelaroferta", "Cancelar una oferta enviada."),
+                ("ofertarcontrato", "Enviar una oferta de contrato a un jugador."),
+                ("registraramistoso", "Solicitar un amistoso contra otro equipo. (Managers/Capitanes)"),
+                ("eliminaramistoso", "Eliminar un amistoso programado para hoy. (Managers/Capitanes)")
+            ]
+            manager_field = "\n".join([f"**`/{cmd}`** - {desc}" for cmd, desc in manager_commands])
+            embed.add_field(name="⚽ Manager", value=manager_field or "Ningún comando disponible.", inline=False)
 
-        # Comandos de Admin
-        admin_commands = [
-            ("open_market", "Abre el mercado de transferencias."),
-            ("close_market", "Cierra el mercado de transferencias."),
-            ("sync", "Sincroniza los comandos del bot."),
-            ("check_market", "Verifica el estado del mercado."),
-            ("ss", "Ver historial de capturas validadas."),
-            ("crearequipo", "Crear un equipo nuevo con división."),
-            ("creartablaamistosos", "Generar la tabla diaria de amistosos."),
-            ("asignarmanager", "Asignar un manager a un equipo."),
-            ("registrarjugador", "Registrar a un usuario como jugador."),
-            ("agregarcapitan", "Agregar un capitán a un equipo."),
-            ("quitarcapitan", "Quitar un capitán a un equipo."),
-            ("resetearamistosos", "Reiniciar la tabla de amistosos."),
-            ("sancionar", "Sancionar a un jugador."),
-            ("quitaresancion", "Quitar sanción a un jugador."),
-            ("avanzartemporada", "Avanzar una temporada."),
-            ("addmoney", "Agregar dinero a un club."),
-            ("removemoney", "Quitar dinero a un club."),
-            ("eliminarequipo", "Eliminar un equipo y sus datos.")
-        ]
-        current_field = ""
-        field_count = 1
-        for cmd, desc in admin_commands:
-            command_text = f"**`/{cmd}`** - {desc}\n"
-            if len(current_field) + len(command_text) > 1024:
+            # Comandos de Admin
+            admin_commands = [
+                ("open_market", "Abre el mercado de transferencias."),
+                ("close_market", "Cierra el mercado de transferencias."),
+                ("sync_commands", "Sincroniza los comandos del bot. (Solo Owner)"),
+                ("check_market", "Verifica el estado del mercado."),
+                ("ss", "Ver historial de capturas validadas."),
+                ("crearequipo", "Crear un equipo nuevo con división."),
+                ("creartabla", "Generar la tabla diaria de amistosos."),  # Corrected name
+                ("asignarmanager", "Asignar un manager a un equipo."),
+                ("registrarjugador", "Registrar a un usuario como jugador."),
+                ("agregarcapitan", "Agregar un capitán a un equipo."),
+                ("quitarcapitan", "Quitar un capitán a un equipo."),
+                ("resetearamistosos", "Reiniciar la tabla de amistosos."),
+                ("sancionar", "Sancionar a un jugador."),
+                ("quitaresancion", "Quitar sanción a un jugador."),
+                ("avanzartemporada", "Avanzar una temporada."),
+                ("addmoney", "Agregar dinero a un club."),
+                ("removemoney", "Quitar dinero a un club."),
+                ("eliminarequipo", "Eliminar un equipo y sus datos.")
+            ]
+            current_field = ""
+            field_count = 1
+            for cmd, desc in admin_commands:
+                command_text = f"**`/{cmd}`** - {desc}\n"
+                if len(current_field) + len(command_text) > 1024:
+                    embed.add_field(
+                        name=f"🔧 Admin (Parte {field_count})",
+                        value=current_field or "Ningún comando disponible.",
+                        inline=False
+                    )
+                    current_field = command_text
+                    field_count += 1
+                else:
+                    current_field += command_text
+            if current_field:
                 embed.add_field(
                     name=f"🔧 Admin (Parte {field_count})",
-                    value=current_field,
+                    value=current_field or "Ningún comando disponible.",
                     inline=False
                 )
-                current_field = command_text
-                field_count += 1
-            else:
-                current_field += command_text
-        if current_field:
-            embed.add_field(
-                name=f"🔧 Admin (Parte {field_count})",
-                value=current_field,
-                inline=False
-            )
 
-        total_length = sum(len(field.value) for field in embed.fields) + len(embed.description) + len(embed.title)
-        if total_length > 6000:
+            # Check embed size
+            total_length = sum(len(field.value) for field in embed.fields) + len(embed.description) + len(embed.title)
+            if total_length > 6000:
+                await interaction.response.send_message(
+                    embed=error("La lista de comandos es demasiado larga para mostrar."),
+                    ephemeral=True
+                )
+                logging.error(f"Embed demasiado largo ({total_length} caracteres) en /help")
+                return
+
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            logging.info(f"El usuario {interaction.user.id} ejecutó /help en el guild {interaction.guild.id if interaction.guild else 'DM'}.")
+        except Exception as e:
+            logging.error(f"Error en /help: {e}", exc_info=True)
             await interaction.response.send_message(
-                "Error: La lista de comandos es demasiado larga para mostrar.",
+                embed=error(f"Error al mostrar la ayuda: {str(e)}"),
                 ephemeral=True
             )
-            print(f"Error: Embed demasiado largo ({total_length} caracteres)")
-            return
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        print(f"El usuario {interaction.user.id} ejecutó /help en el guild {interaction.guild.id if interaction.guild else 'DM'}.")
-
 
 
 async def sync(self, interaction: discord.Interaction):

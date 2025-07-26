@@ -477,6 +477,7 @@ class LeagueCog(commands.Cog):
         try:
             text = pytesseract.image_to_string(img, lang='eng')
             logger.debug(f"Texto extraído por OCR: {text}")
+            text = text.replace('O', '0').replace('I', '1').replace('l', '1')
         except Exception as e:
             logger.error(f"Error en OCR: {e}")
             await message.reply(embed=error("Error al procesar la imagen con OCR. Intenta de nuevo."))

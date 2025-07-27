@@ -657,19 +657,31 @@ class LeagueCog(commands.Cog):
         db.assign_manager_to_team(interaction.guild.id, team['id'], manager.id)
         await interaction.response.send_message(embed=success(f"{manager.name} asignado como manager de {equipo}."))
 
-    @app_commands.command(name="registrarjugador", description="Registrar a un usuario como jugador")
-    @app_commands.describe(jugador="Usuario a registrar")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def registrarjugador(self, interaction: discord.Interaction, jugador: discord.User):
-        if db.get_team_by_manager(interaction.guild.id, jugador.id):
-            await interaction.response.send_message(embed=error(f"{jugador.name} es manager y no puede ser jugador."), ephemeral=True)
+   @app_commands.command(name="registrarjugador", description="Regístrate como jugador en la liga")
+    async def registrarjugador(self, interaction: discord.Interaction):
+        # Obtener el usuario que ejecuta el comando
+        user = interaction.user
+        
+        # Verificar si está en el canal correcto (opcional, configurado más abajo)
+        config = db.get_server_config(interaction.guild.id)
+        if config and 'registro_channel_id' in config and interaction.channel_id != config['registro_channel_id']:
+            await interaction.response.send_message(embed=error("Este comando solo puede usarse en el canal de registros."), ephemeral=True)
             return
-        if db.get_player_by_id(interaction.guild.id, jugador.id):
-            await interaction.response.send_message(embed=error(f"{jugador.name} ya está registrado."), ephemeral=True)
+    
+        # Verificar si el usuario es manager
+        if db.get_team_by_manager(interaction.guild.id, user.id):
+            await interaction.response.send_message(embed=error(f"{user.name} es manager y no puede ser jugador."), ephemeral=True)
             return
-        db.add_player(interaction.guild.id, jugador.name, jugador.id)
-        await interaction.response.send_message(embed=success(f"{jugador.name} registrado como jugador."), ephemeral=True)
-
+    
+        # Verificar si ya está registrado
+        if db.get_player_by_id(interaction.guild.id, user.id):
+            await interaction.response.send_message(embed=error(f"{user.name} ya está registrado."), ephemeral=True)
+            return
+    
+        # Registrar al usuario
+        db.add_player(interaction.guild.id, user.name, user.id)
+        await interaction.response.send_message(embed=success(f"{user.name} registrado como jugador."), ephemeral=True)
+    
     @app_commands.command(name="agenteslibres", description="Mostrar la lista de agentes libres")
     async def agenteslibres(self, interaction: discord.Interaction):
         players = db.get_free_agents(interaction.guild.id)

@@ -1103,6 +1103,25 @@ def generate_horarios(inicio: str, fin: str) -> list:
     except ValueError:
         return []
 
+def set_registro_channel(guild_id: int, channel_id: int):
+    db_path = get_db_path(guild_id)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE server_config SET registro_channel_id = ? WHERE guild_id = ?",
+                (channel_id, guild_id)
+            )
+            if cur.rowcount == 0:
+                cur.execute(
+                    "INSERT INTO server_config (guild_id, registro_channel_id) VALUES (?, ?)",
+                    (guild_id, channel_id)
+                )
+            conn.commit()
+            database_logger.info(f"Canal de registros establecido a {channel_id} para guild {guild_id}")
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al establecer canal de registros para guild {guild_id}: {e}")
+        
 def create_amistosos_tabla(guild_id: int, inicio: str, fin: str) -> int:
     """Crea una nueva tabla de amistosos con horarios especificados."""
     horarios = generate_horarios(inicio, fin)

@@ -69,11 +69,12 @@ def create_tables(guild_id: int):
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
-             CREATE TABLE IF NOT EXISTS server_config (
+            CREATE TABLE IF NOT EXISTS server_config (
                 guild_id INTEGER PRIMARY KEY,
                 ss_channel_ids TEXT,  -- Cambiado de ss_channel_id INTEGER a TEXT para múltiples IDs
                 amistosos_channel_id INTEGER,
-                arbiter_role_id INTEGER
+                arbiter_role_id INTEGER,
+                registro_channel_id INTEGER  -- Nueva columna para el canal de registros
             );
             CREATE TABLE IF NOT EXISTS screenshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

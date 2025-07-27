@@ -527,6 +527,13 @@ class LeagueCog(commands.Cog):
         # Procesar comandos si aplica
         await self.bot.process_commands(message)
                 
+
+    @app_commands.command(name="set_registro_channel", description="Establece el canal para registros de jugadores (solo admin)")
+    @app_commands.describe(canal="Canal para registros")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_registro_channel(self, interaction: discord.Interaction, canal: discord.TextChannel):
+        db.set_registro_channel(interaction.guild.id, canal.id)
+        await interaction.response.send_message(embed=success(f"Canal de registros establecido a {canal.mention}."), ephemeral=True)
     
     @app_commands.command(name="test_command", description="Comando de prueba para verificar sincronización")
     async def test_command(self, interaction: discord.Interaction):
@@ -1238,6 +1245,7 @@ class LeagueCog(commands.Cog):
                 ("equiposregistrados", "Ver todos los equipos registrados, opcionalmente por división."),
                 ("mercado", "Ver jugadores transferibles."),
                 ("balance", "Ver el balance de un club."),
+                ("registrarjugador", "Permite a los usuarios registrarse como jugadores."),
             ]
             general_field = "\n".join([f"**`/{cmd}`** - {desc}" for cmd, desc in general_commands])
             embed.add_field(name="📋 General", value=general_field or "Ningún comando disponible.", inline=False)
@@ -1267,7 +1275,6 @@ class LeagueCog(commands.Cog):
                 ("crearequipo", "Crear un equipo nuevo con división."),
                 ("creartabla", "Generar la tabla diaria de amistosos."),  # Corrected name
                 ("asignarmanager", "Asignar un manager a un equipo."),
-                ("registrarjugador", "Registrar a un usuario como jugador."),
                 ("agregarcapitan", "Agregar un capitán a un equipo."),
                 ("quitarcapitan", "Quitar un capitán a un equipo."),
                 ("resetearamistosos", "Reiniciar la tabla de amistosos."),

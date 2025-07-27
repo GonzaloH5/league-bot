@@ -664,7 +664,7 @@ class LeagueCog(commands.Cog):
         db.assign_manager_to_team(interaction.guild.id, team['id'], manager.id)
         await interaction.response.send_message(embed=success(f"{manager.name} asignado como manager de {equipo}."))
 
-   @app_commands.command(name="registrarjugador", description="Regístrate como jugador en la liga")
+    @app_commands.command(name="registrarjugador", description="Regístrate como jugador en la liga")
     async def registrarjugador(self, interaction: discord.Interaction):
         # Obtener el usuario que ejecuta el comando
         user = interaction.user

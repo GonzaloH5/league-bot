@@ -917,7 +917,7 @@ def add_screenshot(guild_id: int, user_id: int, nicktag: str, discord_name: str,
 def update_screenshot_status(guild_id: int, screenshot_id: int, status: str):
     db_path = get_db_path(guild_id)
     try:
-        with sqlite3.connect(db_path) as conn
+        with sqlite3.connect(db_path) as conn:
 
             cur = conn.cursor()
             cur.execute('UPDATE screenshots SET status = ? WHERE id = ?', (status, screenshot_id))

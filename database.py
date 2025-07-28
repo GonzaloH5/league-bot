@@ -541,28 +541,49 @@ def accept_offer(guild_id: int, offer_id: int) -> bool:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
+
             cur.execute('SELECT * FROM transfer_offers WHERE id = ?', (offer_id,))
             offer = cur.fetchone()
-            if not offer or offer['status'] != 'pending':
+            if not offer:
+                database_logger.error("❌ No se encontró la oferta.")
                 return False
-            player = get_player_by_id(guild_id, offer['player_name'])
+            if offer['status'] != 'pending':
+                database_logger.error(f"❌ Oferta no está pendiente, está en estado '{offer['status']}'")
+                return False
+
+            player = get_player_by_name(guild_id, offer['player_name'])
             if not player:
+                database_logger.error(f"❌ No se encontró jugador con nombre '{offer['player_name']}'")
                 return False
+
             from_team_id = offer['from_team_id']
             to_team_id = offer['to_team_id']
-            cur.execute('SELECT balance FROM club_balance WHERE team_id = ?', (to_team_id,))
-            balance = cur.fetchone()
-            if not balance or balance['balance'] < offer['price']:
-                return False
+
+            if offer['from_team_id'] is not None:
+                cur.execute('SELECT balance FROM club_balance WHERE team_id = ?', (to_team_id,))
+                balance = cur.fetchone()
+                if not balance or balance['balance'] < offer['price']:
+                    database_logger.error(f"❌ Fondos insuficientes. Tiene {balance['balance']}, necesita {offer['price']}")
+                    return False
+            cur.execute(
+                'UPDATE players SET team_id = ?, contract_duration = ?, release_clause = ? WHERE name = ?',
+                (to_team_id, offer['contract_duration'], offer['release_clause'], offer['player_name'])
+            )
+
+            cur.execute('UPDATE transfer_offers SET status = ? WHERE id = ?', ('accepted', offer_id))
+            conn.commit()
+
             cur.execute('UPDATE club_balance SET balance = balance - ? WHERE team_id = ?', (offer['price'], to_team_id))
+
             if from_team_id:
-                cur.execute('UPDATE club_balance SET balance = balance + ? WHERE team_id = ?', (offer['price'], from_team_id))
+                cur.execute('UPDATE club_balance SET balance = balance + ? WHERE team_id = ?', (offer['price'], offer['from_team_id']))
             cur.execute('UPDATE players SET team_id = ?, contract_duration = ?, release_clause = ? WHERE name = ?', 
                        (to_team_id, offer['contract_duration'], offer['release_clause'], offer['player_name']))
             cur.execute('UPDATE transfer_offers SET status = ? WHERE id = ?', ('accepted', offer_id))
             conn.commit()
             database_logger.info(f"Oferta {offer_id} aceptada en guild {guild_id}.")
             return True
+
     except sqlite3.Error as e:
         database_logger.error(f"Error al aceptar oferta {offer_id} en guild {guild_id}: {e}")
         return False
@@ -614,7 +635,8 @@ def has_pending_offer(guild_id: int, manager_id: int, user_id: int) -> bool:
         database_logger.error(f"Error al verificar oferta pendiente para manager {manager_id} y jugador {user_id} en guild {guild_id}: {e}")
         return False
 
-def pay_clause_and_transfer(guild_id: int, player_name: str, to_team_id: int, price: int, manager_id: int) -> int:
+def pay_clause_and_transfer(guild_id: int, player_name: str, to_team_id: int, price: int, manager_id: int, duration: int, new_clause: int) -> int:
+
     if get_market_status(guild_id) != 'open':
         return -2
     db_path = get_db_path(guild_id)
@@ -634,8 +656,11 @@ def pay_clause_and_transfer(guild_id: int, player_name: str, to_team_id: int, pr
             cur.execute('UPDATE club_balance SET balance = balance - ? WHERE team_id = ?', (price, to_team_id))
             if from_team_id:
                 cur.execute('UPDATE club_balance SET balance = balance + ? WHERE team_id = ?', (price, from_team_id))
-            cur.execute('INSERT INTO transfer_offers (player_name, from_team_id, to_team_id, from_manager_id, price, status, release_clause) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                       (player_name, from_team_id, to_team_id, manager_id, price, 'bought_clause', price))
+            cur.execute('''
+                INSERT INTO transfer_offers 
+                (player_name, from_team_id, to_team_id, from_manager_id, price, status, release_clause, contract_duration) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (player_name, from_team_id, to_team_id, manager_id, price, 'bought_clause', new_clause, duration))
             offer_id = cur.lastrowid
             conn.commit()
             database_logger.info(f"Oferta por cláusula {offer_id} creada para {player_name} en guild {guild_id}.")
@@ -650,21 +675,24 @@ def accept_clause_payment(guild_id: int, offer_id: int) -> bool:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
+
             cur.execute('SELECT * FROM transfer_offers WHERE id = ?', (offer_id,))
             offer = cur.fetchone()
             if not offer or offer['status'] != 'bought_clause':
                 return False
-            player = get_player_by_id(guild_id, offer['player_name'])
-            if not player:
-                return False
-            cur.execute('UPDATE players SET team_id = ?, contract_duration = NULL, release_clause = ? WHERE name = ?', 
-                       (offer['to_team_id'], offer['release_clause'], offer['player_name']))
+
+            # Solo actualizar jugador y marcar oferta como aceptada
+            cur.execute('''
+                UPDATE players
+                SET team_id = ?, contract_duration = ?, release_clause = ?
+                WHERE name = ?
+            ''', (offer['to_team_id'], offer['contract_duration'], offer['release_clause'], offer['player_name']))
+
             cur.execute('UPDATE transfer_offers SET status = ? WHERE id = ?', ('accepted', offer_id))
             conn.commit()
-            database_logger.info(f"Pago de cláusula {offer_id} aceptado en guild {guild_id}.")
             return True
     except sqlite3.Error as e:
-        database_logger.error(f"Error al aceptar pago de cláusula {offer_id} en guild {guild_id}: {e}")
+        database_logger.error(f"Error al aceptar cláusula para oferta {offer_id} en guild {guild_id}: {e}")
         return False
 
 def get_club_balance(guild_id: int, team_id: int) -> int:
@@ -1105,6 +1133,19 @@ def generate_horarios(inicio: str, fin: str) -> list:
         return horarios
     except ValueError:
         return []
+
+def get_player_by_name(guild_id: int, name: str) -> dict:
+    db_path = get_db_path(guild_id)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute('SELECT * FROM players WHERE name = ?', (name,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error as e:
+        database_logger.error(f"Error al obtener jugador por nombre {name} en guild {guild_id}: {e}")
+        return None
 
 def set_registro_channel(guild_id: int, channel_id: int):
     db_path = get_db_path(guild_id)

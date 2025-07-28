@@ -25,7 +25,7 @@ logger = logging.getLogger('bot')
 
 class OfferView(discord.ui.View):
     def __init__(self, offer_id, manager_id, guild_id, is_clause_payment=False):
-        super().__init__(timeout=None)  # Sin timeout para persistencia
+        super().__init__(timeout=None)
         self.offer_id = offer_id
         self.manager_id = manager_id
         self.guild_id = guild_id
@@ -41,26 +41,34 @@ class OfferView(discord.ui.View):
             await interaction.response.edit_message(embed=error("Oferta no válida o ya procesada."), view=None)
             return
         
+        # Verificar que el usuario que acepta es el jugador objetivo
+        player = db.get_player_by_id(self.guild_id, interaction.user.id)
+        if not player or player['name'] != offer['player_name']:
+            await interaction.response.edit_message(embed=error("No eres el jugador objetivo de esta oferta."), view=None)
+            return
+        
         if self.is_clause_payment:
             if db.accept_clause_payment(self.guild_id, self.offer_id):
                 await interaction.response.edit_message(embed=success("Transferencia por cláusula aceptada."), view=None)
                 manager = interaction.client.get_user(self.manager_id)
                 if manager:
                     try:
-                        await manager.send(embed=info(f"El jugador {interaction.user.name} aceptó la transferencia por cláusula #{self.offer_id}."))
+                        await manager.send(embed=info(f"El jugador {player['name']} aceptó la transferencia por cláusula #{self.offer_id}."))
                     except discord.Forbidden:
                         logger.warning(f"No se pudo notificar al manager {self.manager_id}: DMs cerrados.")
             else:
                 await interaction.response.edit_message(embed=error("Fondos insuficientes."), view=None)
         else:
-            db.accept_offer(self.guild_id, self.offer_id)
-            await interaction.response.edit_message(embed=success("Oferta aceptada."), view=None)
-            manager = interaction.client.get_user(self.manager_id)
-            if manager:
-                try:
-                    await manager.send(embed=info(f"El jugador {interaction.user.name} aceptó la oferta #{self.offer_id}."))
-                except discord.Forbidden:
-                    logger.warning(f"No se pudo notificar al manager {self.manager_id}: DMs cerrados.")
+            if db.accept_offer(self.guild_id, self.offer_id):
+                await interaction.response.edit_message(embed=success("Oferta aceptada."), view=None)
+                manager = interaction.client.get_user(self.manager_id)
+                if manager:
+                    try:
+                        await manager.send(embed=info(f"El jugador {player['name']} aceptó la oferta #{self.offer_id}."))
+                    except discord.Forbidden:
+                        logger.warning(f"No se pudo notificar al manager {self.manager_id}: DMs cerrados.")
+            else:
+                await interaction.response.edit_message(embed=error("Error al aceptar la oferta."), view=None)
 
     @ui.button(label="❌ Rechazar", style=discord.ButtonStyle.red)
     async def reject(self, interaction: discord.Interaction, button: ui.Button):
@@ -118,12 +126,10 @@ class ConfirmAmistosoView(ui.View):
         db.update_solicitud_status(self.guild_id, self.solicitud_id, 'accepted', interaction.user.id)
         db.add_amistoso(self.guild_id, solicitud['solicitante_team_id'], solicitud['solicitado_team_id'], solicitud['horario'], solicitud['tabla_id'])
 
-        # Notificaciones
         solicitante_team = db.get_team_by_id(self.guild_id, solicitud['solicitante_team_id'])
         solicitado_team = db.get_team_by_id(self.guild_id, solicitud['solicitado_team_id'])
         embed = success(f"Amistoso programado: {solicitante_team['name']} vs {solicitado_team['name']} a las {solicitud['horario']}")
         
-        # Enviar notificación al manager/capitán del equipo solicitante
         solicitante_manager = self.bot.get_user(solicitante_team['manager_id'])
         if solicitante_manager:
             try:
@@ -131,7 +137,6 @@ class ConfirmAmistosoView(ui.View):
             except discord.HTTPException:
                 pass
         
-        # Enviar notificación al canal de amistosos, si está configurado
         config = db.get_server_config(self.guild_id)
         if config and config['amistosos_channel_id']:
             channel = self.bot.get_channel(config['amistosos_channel_id'])
@@ -140,7 +145,6 @@ class ConfirmAmistosoView(ui.View):
 
         await interaction.response.send_message(embed=success("Amistoso aceptado y programado."), ephemeral=True)
 
-        # Actualizar la tabla
         if config and config['amistosos_channel_id']:
             channel = self.bot.get_channel(config['amistosos_channel_id'])
             if channel and self.cog.amistosos_message_id:
@@ -168,12 +172,10 @@ class ConfirmAmistosoView(ui.View):
 
         db.update_solicitud_status(self.guild_id, self.solicitud_id, 'rejected', interaction.user.id)
 
-        # Notificaciones
-        solicitante_team = db.get_team(self.guild_id, solicitud['solicitante_team_id'])
-        solicitado_team = db.get_team(self.guild_id, solicitud['solicitado_team_id'])
+        solicitante_team = db.get_team_by_id(self.guild_id, solicitud['solicitante_team_id'])
+        solicitado_team = db.get_team_by_id(self.guild_id, solicitud['solicitado_team_id'])
         embed = error(f"Solicitud de amistoso rechazada: {solicitante_team['name']} vs {solicitado_team['name']} a las {solicitud['horario']}")
         
-        # Enviar notificación al manager/capitán del equipo solicitante
         solicitante_manager = self.bot.get_user(solicitante_team['manager_id'])
         if solicitante_manager:
             try:
@@ -218,7 +220,7 @@ class TeamBookView(ui.View):
                 captain_mentions) or "Sin capitanes", inline=False)
             players = db.get_players_by_team(self.guild_id, team['id'])
             embed.add_field(name="Jugadores", value="\n".join(
-                [f"{p['name']}: {p['contract_details'] or 'Sin contrato'}" for p in players]) or "Ninguno", inline=False)
+                [f"{p['name']}: {p['contract_duration'] or 'Sin contrato'}" for p in players]) or "Ninguno", inline=False)
             embed.set_footer(
                 text=f"Página {self.current_page} de {len(self.teams)}")
             return embed
@@ -273,7 +275,7 @@ class EliminarAmistosoSelect(ui.Select):
             return
 
         amistoso_id = int(self.values[0])
-        amistoso = db.get_amistoso_by_id(self.guild_id, amistoso_id)
+        amistoso = next((a for a in db.get_amistosos_for_tabla(self.guild_id, db.get_latest_amistosos_tabla(self.guild_id)['id']) if a['id'] == amistoso_id), None)
         if not amistoso:
             await interaction.response.send_message(embed=error("Amistoso no encontrado."), ephemeral=True)
             return
@@ -310,10 +312,9 @@ class EliminarAmistosoSelect(ui.Select):
                     except discord.HTTPException as e:
                         logger.error(f"Error HTTP al notificar a {recipient.name} ({recipient_id}): {e}")
 
-        # Actualizar la tabla de amistosos
         tabla = db.get_latest_amistosos_tabla(self.guild_id)
         if tabla:
-                table = cog.generate_amistosos_table(self.guild_id, tabla['id'])  # Call on cog instance
+            table = self.bot.cogs['LeagueCog'].generate_amistosos_table(self.guild_id, tabla['id'])
         else:
             table = "No hay tabla activa."
 
@@ -492,8 +493,7 @@ class LeagueCog(commands.Cog):
         time_match = time_pattern.search(text)
         screenshot_time = time_match.group(0).replace('.', ':') if time_match else None
 
-        # Usar el primer canal de ss_channel_ids como canal de revisión (ajusta según tu lógica)
-        review_channel_id = config['ss_channel_ids'][0]  # Selecciona el primer canal configurado
+        review_channel_id = config['ss_channel_ids'][0]
         review_channel = self.bot.get_channel(review_channel_id)
         arbiter_role = message.guild.get_role(config['arbiter_role_id'])
         if not review_channel or not arbiter_role:
@@ -524,9 +524,7 @@ class LeagueCog(commands.Cog):
             await review_channel.send(content=f"{arbiter_role.mention}", embed=embed, view=view)
             await message.reply(embed=error("Captura enviada a revisión: datos incompletos."))
 
-        # Procesar comandos si aplica
         await self.bot.process_commands(message)
-                
 
     @app_commands.command(name="set_registro_channel", description="Establece el canal para registros de jugadores (solo admin)")
     @app_commands.describe(canal="Canal para registros")
@@ -571,8 +569,8 @@ class LeagueCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(
-    name="set_screenshot_settings",
-    description="Configura los canales y el rol para capturas (solo admin)"
+        name="set_screenshot_settings",
+        description="Configura los canales y el rol para capturas (solo admin)"
     )
     @app_commands.describe(
         canales="Menciona los canales para capturas (ejemplo: #canal1,#canal2 sin espacios)",
@@ -580,11 +578,9 @@ class LeagueCog(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def set_screenshot_settings(self, interaction: discord.Interaction, canales: str, rol: discord.Role):
-        # Separar las menciones de canales por comas y limpiar espacios
         channel_mentions = [name.strip() for name in canales.replace(' ', '').split(',')]
         channel_ids = []
 
-        # Validar que el rol no sea @everyone
         if rol == interaction.guild.default_role:
             await interaction.response.send_message(
                 embed=error("El rol no puede ser @everyone. Selecciona un rol específico."),
@@ -592,9 +588,7 @@ class LeagueCog(commands.Cog):
             )
             return
 
-        # Convertir menciones a IDs
         for mention in channel_mentions:
-            # Extraer el ID de la mención (por ejemplo, <#123> -> 123)
             match = re.match(r'^<#(\d+)>$', mention)
             if not match:
                 await interaction.response.send_message(
@@ -612,7 +606,6 @@ class LeagueCog(commands.Cog):
                 return
             channel_ids.append(channel.id)
 
-        # Verificar que haya al menos un canal válido
         if not channel_ids:
             await interaction.response.send_message(
                 embed=error("No se encontraron canales válidos."),
@@ -620,11 +613,9 @@ class LeagueCog(commands.Cog):
             )
             return
 
-        # Guardar los IDs como una cadena separada por comas
         ss_channel_ids_str = ','.join(map(str, channel_ids))
         db.set_server_settings(interaction.guild.id, ss_channel_ids_str, rol.id)
 
-        # Responder con los canales configurados
         channel_mentions_str = ', '.join([f'<#{id}>' for id in channel_ids])
         await interaction.response.send_message(
             embed=success(f"Canales configurados: {channel_mentions_str}, rol: {rol.mention}"),
@@ -642,10 +633,10 @@ class LeagueCog(commands.Cog):
     @app_commands.describe(nombre="Nombre del equipo", division="División del equipo")
     @app_commands.checks.has_permissions(administrator=True)
     async def crearequipo(self, interaction: discord.Interaction, nombre: str, division: str):
-         if db.add_team(interaction.guild.id, nombre, division):
-             await interaction.response.send_message(embed=success(f"Equipo {nombre} creado en división {division}."), ephemeral=True)
-         else:
-             await interaction.response.send_message(embed=error("El equipo ya existe o el manager ya está asignado a otro equipo."), ephemeral=True)
+        if db.add_team(interaction.guild.id, nombre, division):
+            await interaction.response.send_message(embed=success(f"Equipo {nombre} creado en división {division}."), ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=error("El equipo ya existe o el manager ya está asignado a otro equipo."), ephemeral=True)
 
     @app_commands.command(name="asignarmanager", description="Asignar un manager a un equipo")
     @app_commands.describe(equipo="Nombre del equipo", manager="Usuario a asignar")
@@ -666,29 +657,28 @@ class LeagueCog(commands.Cog):
 
     @app_commands.command(name="registrarjugador", description="Regístrate como jugador en la liga")
     async def registrarjugador(self, interaction: discord.Interaction):
-        # Obtener el usuario que ejecuta el comando
         user = interaction.user
         
-        # Verificar si está en el canal correcto (opcional, configurado más abajo)
         config = db.get_server_config(interaction.guild.id)
         if config and 'registro_channel_id' in config and interaction.channel_id != config['registro_channel_id']:
             await interaction.response.send_message(embed=error("Este comando solo puede usarse en el canal de registros."), ephemeral=True)
             return
     
-        # Verificar si el usuario es manager
         if db.get_team_by_manager(interaction.guild.id, user.id):
             await interaction.response.send_message(embed=error(f"{user.name} es manager y no puede ser jugador."), ephemeral=True)
             return
     
-        # Verificar si ya está registrado
-        if db.get_player_by_id(interaction.guild.id, user.id):
-            await interaction.response.send_message(embed=error(f"{user.name} ya está registrado."), ephemeral=True)
+        existing_player = db.get_player_by_id(interaction.guild.id, user.id)
+        if existing_player:
+            await interaction.response.send_message(embed=error(f"{user.name} ya está registrado como {existing_player['name']}."),
+                                                    ephemeral=True)
             return
     
-        # Registrar al usuario
-        db.add_player(interaction.guild.id, user.name, user.id)
-        await interaction.response.send_message(embed=success(f"{user.name} registrado como jugador."), ephemeral=True)
-    
+        if db.add_player(interaction.guild.id, user.name, user.id):
+            await interaction.response.send_message(embed=success(f"{user.name} registrado como jugador."), ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=error("Error al registrarte. Contacta a un administrador."), ephemeral=True)
+
     @app_commands.command(name="agenteslibres", description="Mostrar la lista de agentes libres")
     async def agenteslibres(self, interaction: discord.Interaction):
         players = db.get_free_agents(interaction.guild.id)
@@ -744,56 +734,49 @@ class LeagueCog(commands.Cog):
     @app_commands.command(name="ofertarcontrato", description="Enviar una oferta de contrato a un jugador")
     @app_commands.describe(jugador="Jugador objetivo", clausula="Cláusula de rescisión", duracion="Duración en meses")
     async def ofertarcontrato(self, interaction: discord.Interaction, jugador: discord.Member, clausula: int, duracion: int):
-        # Verificar si el jugador está baneado
         if await check_ban(interaction, jugador.id, interaction.guild.id):
             return
 
-        # Verificar si el usuario es manager de un equipo
         manager_team = db.get_team_by_manager(interaction.guild.id, interaction.user.id)
         if not manager_team:
             await interaction.response.send_message(embed=error("No eres manager de ningún equipo."), ephemeral=True)
             return
 
-        # Validar que los valores sean positivos
         if clausula <= 0 or duracion <= 0:
             await interaction.response.send_message(embed=error("Cláusula y duración deben ser positivas."), ephemeral=True)
             return
 
-        # Obtener la información del jugador
         player = db.get_player_by_id(interaction.guild.id, jugador.id)
         if not player:
-            await interaction.response.send_message(embed=error("El usuario no está registrado como jugador."), ephemeral=True)
+            await interaction.response.send_message(embed=error(f"{jugador.name} no está registrado como jugador."), ephemeral=True)
             return
 
-        # Verificar si ya existe una oferta pendiente
         if db.has_pending_offer(interaction.guild.id, interaction.user.id, jugador.id):
             await interaction.response.send_message(embed=error("Ya existe una oferta pendiente para este jugador."), ephemeral=True)
             return
 
-        # Crear la oferta de transferencia
         offer_id = db.create_transfer_offer(
-            interaction.guild.id, 
-            player['name'], 
-            manager_team['id'], 
-            manager_team['id'], 
-            interaction.user.id, 
-            clausula, 
-            duracion, 
+            interaction.guild.id,
+            player['name'],
+            None if not player['team_id'] else player['team_id'],
+            manager_team['id'],
+            interaction.user.id,
+            clausula,
+            duracion,
             clausula
         )
         if offer_id == -1:
-            logger.error("Falló la creación de la oferta. Revisa si ya existe o hay un error en la base de datos.")
+            logger.error(f"Falló la creación de la oferta para {player['name']} en guild {interaction.guild.id}.")
             await interaction.response.send_message(embed=error("Error al crear la oferta."), ephemeral=True)
             return
         elif offer_id == -2:
             await interaction.response.send_message(embed=error("El mercado está cerrado."), ephemeral=True)
             return
 
-        # Enviar la oferta al jugador con una vista interactiva
         view = OfferView(offer_id, interaction.user.id, interaction.guild.id)
         try:
             await jugador.send(embed=info(f"Oferta de {format_tag(interaction.user)}:\n**Cláusula:** {clausula:,}\n**Duración:** {duracion} meses\nID: {offer_id}"), view=view)
-            await interaction.response.send_message(embed=success("Oferta enviada al jugador."), ephemeral=True)
+            await interaction.response.send_message(embed=success(f"Oferta enviada a {jugador.name}."), ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message(embed=error("No puedo enviar DM al jugador."), ephemeral=True)
 
@@ -824,10 +807,10 @@ class LeagueCog(commands.Cog):
         embed = info("Ofertas pendientes:")
         if sent:
             embed.add_field(name="Enviadas", value="\n".join(
-                [f"ID {o['id']} a {o['player_name']} - Cláusula: {o['clause'] or 'N/A':,}, Duración: {o['duration'] or 'N/A'} meses" for o in sent]), inline=False)
+                [f"ID {o['id']} a {o['player_name']} - Cláusula: {o['release_clause'] or 'N/A':,}, Duración: {o['contract_duration'] or 'N/A'} meses" for o in sent]), inline=False)
         if received:
             embed.add_field(name="Recibidas", value="\n".join(
-                [f"ID {o['id']} de {o['manager_name']} - Cláusula: {o['clause'] or 'N/A':,}, Duración: {o['duration'] or 'N/A'} meses" for o in received]), inline=False)
+                [f"ID {o['id']} de {o['from_manager_id']} - Cláusula: {o['release_clause'] or 'N/A':,}, Duración: {o['contract_duration'] or 'N/A'} meses" for o in received]), inline=False)
         if not (sent or received):
             embed.description = "No hay ofertas pendientes."
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -835,9 +818,9 @@ class LeagueCog(commands.Cog):
     @app_commands.command(name="perfil", description="Ver el perfil de un jugador")
     @app_commands.describe(jugador="Jugador objetivo")
     async def perfil(self, interaction: discord.Interaction, jugador: discord.User):
-        if await check_ban(interaction, jugador.id):
+        if await check_ban(interaction, jugador.id, interaction.guild.id):
             return
-        player = db.get_player_by_id(interaction.guild.id, jugador.id)  # Agregado interaction.guild.id
+        player = db.get_player_by_id(interaction.guild.id, jugador.id)
         if not player:
             await interaction.response.send_message(embed=error("Jugador no encontrado."), ephemeral=True)
             return
@@ -887,15 +870,15 @@ class LeagueCog(commands.Cog):
         players = db.get_players_by_team(interaction.guild.id, team['id'])
         embed = info(f"Jugadores de {equipo}")
         embed.description = "\n".join(
-            [f"{p['name']}: {p['contract_details'] or 'Sin contrato'}" for p in players]) or "No hay jugadores."
+            [f"{p['name']}: {p['contract_duration'] or 'Sin contrato'}" for p in players]) or "No hay jugadores."
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="historialjugador", description="Ver historial de transferencias de un jugador")
     @app_commands.describe(jugador="Jugador objetivo")
     async def historialjugador(self, interaction: discord.Interaction, jugador: discord.User):
-        if await check_ban(interaction, jugador.id):
+        if await check_ban(interaction, jugador.id, interaction.guild.id):
             return
-        player = db.get_player_by_id(interaction.guild.id, jugador.id)  # Agregado interaction.guild.id
+        player = db.get_player_by_id(interaction.guild.id, jugador.id)
         if not player:
             await interaction.response.send_message(embed=error("Jugador no encontrado."), ephemeral=True)
             return
@@ -921,14 +904,14 @@ class LeagueCog(commands.Cog):
     @app_commands.command(name="pagaclausula", description="Pagar la cláusula de un jugador")
     @app_commands.describe(jugador="Jugador objetivo")
     async def pagaclausula(self, interaction: discord.Interaction, jugador: discord.User):
-        if await check_ban(interaction, jugador.id):
+        if await check_ban(interaction, jugador.id, interaction.guild.id):
             return
         manager_team = db.get_team_by_manager(
             interaction.guild.id, interaction.user.id)
         if not manager_team:
             await interaction.response.send_message(embed=error("No eres manager de ningún equipo."), ephemeral=True)
             return
-        player = db.get_player_by_id(interaction.guild.id, jugador.id)  # Agregado interaction.guild.id
+        player = db.get_player_by_id(interaction.guild.id, jugador.id)
         if not player or not player['release_clause']:
             await interaction.response.send_message(embed=error("El jugador no tiene cláusula."), ephemeral=True)
             return
@@ -940,7 +923,7 @@ class LeagueCog(commands.Cog):
         if offer_id == -1:
             await interaction.response.send_message(embed=error("Fondos insuficientes."), ephemeral=True)
             return
-        view = OfferView(offer_id, interaction.user.id, interaction.guild.id, is_clause_payment=True)  # Corregido también aquí
+        view = OfferView(offer_id, interaction.user.id, interaction.guild.id, is_clause_payment=True)
         try:
             await jugador.send(embed=info(f"Oferta por cláusula de {format_tag(interaction.user)}:\n**Cláusula:** {player['release_clause']:,}\nID: {offer_id}"), view=view)
             await interaction.response.send_message(embed=success(f"Oferta por cláusula enviada a {jugador.name}."), ephemeral=True)
@@ -960,7 +943,6 @@ class LeagueCog(commands.Cog):
             return
         await interaction.response.send_message(embed=success(f"Tabla de amistosos creada con ID {tabla_id}."), ephemeral=True)
 
-      # Opcional: Publicar la tabla inicial
         config = db.get_server_config(interaction.guild.id)
         if config and config['amistosos_channel_id']:
             channel = self.bot.get_channel(config['amistosos_channel_id'])
@@ -974,7 +956,6 @@ class LeagueCog(commands.Cog):
     async def registraramistoso(self, interaction: discord.Interaction, equipo: str, horario: str):
         await interaction.response.defer(ephemeral=True)
 
-        # Verificar si el usuario es manager o capitán
         manager_team = db.get_team_by_manager(interaction.guild.id, interaction.user.id)
         captain_team = db.get_team_by_captain(interaction.guild.id, interaction.user.id)
         team = manager_team or captain_team
@@ -982,13 +963,11 @@ class LeagueCog(commands.Cog):
             await interaction.followup.send(embed=error("No eres manager ni capitán de ningún equipo."), ephemeral=True)
             return
 
-        # Obtener la tabla más reciente
         tabla = db.get_latest_amistosos_tabla(interaction.guild.id)
         if not tabla:
             await interaction.followup.send(embed=error("No hay una tabla de amistosos activa."), ephemeral=True)
             return
 
-        # Verificar si el horario existe en la tabla
         horarios = db.get_horarios_for_tabla(tabla['id'], interaction.guild.id)
         horario_info = next((h for h in horarios if h['horario'] == horario), None)
         if not horario_info:
@@ -998,7 +977,6 @@ class LeagueCog(commands.Cog):
             await interaction.followup.send(embed=error(f"El horario {horario} ya está ocupado."), ephemeral=True)
             return
 
-        # Verificar el equipo solicitado
         solicitado_team = db.get_team_by_name(interaction.guild.id, equipo)
         if not solicitado_team:
             await interaction.followup.send(embed=error("Equipo no encontrado."), ephemeral=True)
@@ -1007,19 +985,16 @@ class LeagueCog(commands.Cog):
             await interaction.followup.send(embed=error("No puedes jugar contra tu propio equipo."), ephemeral=True)
             return
 
-        # Verificar conflictos
         amistosos = db.get_amistosos_for_tabla(interaction.guild.id, tabla['id'])
         if any(a['horario'] == horario and (a['team1_id'] in [team['id'], solicitado_team['id']] or a['team2_id'] in [team['id'], solicitado_team['id']]) for a in amistosos):
             await interaction.followup.send(embed=error("Uno de los equipos ya tiene un amistoso en ese horario."), ephemeral=True)
             return
 
-            # Registrar la solicitud
         solicitud_id = db.add_solicitud_amistoso(interaction.guild.id, team['id'], solicitado_team['id'], horario, tabla['id'], interaction.user.id)
         if solicitud_id == -1:
             await interaction.followup.send(embed=error("Error al registrar la solicitud."), ephemeral=True)
             return
 
-        # Enviar notificación
         manager_id = solicitado_team['manager_id']
         captains = db.get_captains(interaction.guild.id, solicitado_team['id'])
         recipients = set([manager_id] + captains) if manager_id else set(captains)
@@ -1032,7 +1007,7 @@ class LeagueCog(commands.Cog):
             recipient = self.bot.get_user(recipient_id)
             if recipient:
                 try:
-                    view = ConfirmAmistosoView(solicitud_id, self.bot, interaction.guild.id, cog=self)
+                    view = ConfirmAmistosoView(solicitud_id, self.bot, interaction.guild.id, self)
                     await recipient.send(embed=info(f"Solicitud de amistoso de {team['name']} para el horario {horario}."), view=view)
                 except discord.Forbidden:
                     failed_dms.append(recipient.name)
@@ -1067,7 +1042,7 @@ class LeagueCog(commands.Cog):
     @app_commands.command(name="quitarjugador", description="Enviar a un jugador a agentes libres")
     @app_commands.describe(jugador="Jugador a remover")
     async def quitarjugador(self, interaction: discord.Interaction, jugador: discord.User):
-        player = db.get_player_by_id(interaction.guild.id, jugador.id)  # Agregado interaction.guild.id
+        player = db.get_player_by_id(interaction.guild.id, jugador.id)
         if not player:
             await interaction.response.send_message(embed=error("Jugador no encontrado."), ephemeral=True)
             return
@@ -1092,7 +1067,7 @@ class LeagueCog(commands.Cog):
     @app_commands.describe(division="División a filtrar (opcional)")
     async def equiposregistrados(self, interaction: discord.Interaction, division: str = None):
         teams = db.get_all_teams(interaction.guild.id, division)
-        view = TeamBookView(teams, interaction.user.id, self.bot, interaction.guild.id)  # Agregado interaction.guild.id
+        view = TeamBookView(teams, interaction.user.id, self.bot, interaction.guild.id)
         await interaction.response.send_message(embed=view.get_embed(), view=view)
 
     @app_commands.command(name="mercado", description="Ver jugadores transferibles")
@@ -1116,7 +1091,7 @@ class LeagueCog(commands.Cog):
             interaction.guild.id, interaction.user.id)
         if not (interaction.user.guild_permissions.administrator or manager_team):
             await interaction.response.send_message(embed=error("Solo admins o managers pueden usar este comando."), ephemeral=True)
-        return
+            return
         player = db.get_player_by_id(interaction.guild.id, jugador.id)
         if not player:
             await interaction.response.send_message(embed=error("Jugador no encontrado."), ephemeral=True)
@@ -1132,7 +1107,7 @@ class LeagueCog(commands.Cog):
             return
         db.set_player_transferable(
             interaction.guild.id, player['name'], clausula)
-        clause_value = clausula if clausula is not None else player['release_clause']  # Manejo de None
+        clause_value = clausula if clausula is not None else player['release_clause']
         await interaction.response.send_message(embed=success(f"{jugador.name} agregado al mercado con cláusula {clause_value:,}."))
 
     @app_commands.command(name="quitarmercado", description="Quitar a un jugador del mercado")
@@ -1143,7 +1118,7 @@ class LeagueCog(commands.Cog):
         if not (interaction.user.guild_permissions.administrator or manager_team):
             await interaction.response.send_message(embed=error("Solo admins o managers pueden usar este comando."), ephemeral=True)
             return
-        player = db.get_player_by_id(interaction.guild.id, jugador.id)  # Agregado interaction.guild.id
+        player = db.get_player_by_id(interaction.guild.id, jugador.id)
         if not player:
             await interaction.response.send_message(embed=error("Jugador no encontrado."), ephemeral=True)
             return
@@ -1155,7 +1130,7 @@ class LeagueCog(commands.Cog):
             return
         db.unset_player_transferable(interaction.guild.id, player['name'])
         await interaction.response.send_message(embed=success(f"{jugador.name} removido del mercado."))
-        
+
     @app_commands.command(name="balance", description="Ver el balance de un club")
     @app_commands.describe(equipo="Nombre del equipo")
     async def balance(self, interaction: discord.Interaction, equipo: str):
@@ -1192,12 +1167,12 @@ class LeagueCog(commands.Cog):
     @app_commands.describe(equipo="Nombre del equipo")
     @app_commands.checks.has_permissions(administrator=True)
     async def eliminarequipo(self, interaction: discord.Interaction, equipo: str):
-        team = db.get_team_by_name(interaction.guild.id, equipo)  # Corregido de 'nombre' a 'equipo'
+        team = db.get_team_by_name(interaction.guild.id, equipo)
         if not team:
             await interaction.response.send_message(embed=error("Equipo no encontrado."), ephemeral=True)
             return
-        db.delete_team(interaction.guild.id, equipo)  # Corregido de 'nombre' a 'equipo'
-        await interaction.response.send_message(embed=success("Equipo eliminado, Todos sus jugadores son agentes libres"), ephemeral=True)
+        db.delete_team(interaction.guild.id, equipo)
+        await interaction.response.send_message(embed=success("Equipo eliminado, todos sus jugadores son agentes libres"), ephemeral=True)
 
     @app_commands.command(name="fichajes", description="Ver los últimos fichajes realizados en la liga")
     @app_commands.describe(cantidad="Número de fichajes a mostrar (1-25)")
@@ -1217,21 +1192,18 @@ class LeagueCog(commands.Cog):
                 name=f"ID {transfer['id']}", value=f"{transfer['player_name']}: {from_team} → {to_team} por {transfer['price']:,} [{transfer['status']}]", inline=False)
         await interaction.response.send_message(embed=embed)
 
-    # Comando de ayuda personalizado
     @app_commands.command(name="help", description="Muestra los comandos disponibles del bot")
     async def help_command(self, interaction: discord.Interaction):
         try:
             embed = Embed(
                 title="🧾 Comandos del Bot",
                 description="Comandos organizados por categoría para gestionar la liga y amistosos.",
-                color=Color.from_rgb(102, 255, 178)  # Verde claro
+                color=Color.from_rgb(102, 255, 178)
             )
-            # Safely handle avatar
             avatar_url = self.bot.user.avatar.url if self.bot.user.avatar else None
             embed.set_thumbnail(url=avatar_url or discord.utils.MISSING)
             embed.set_footer(text=self.bot.user.name, icon_url=avatar_url or discord.utils.MISSING)
 
-            # Comandos Generales
             general_commands = [
                 ("help", "Muestra esta lista de comandos."),
                 ("amistosos", "Mostrar la tabla de amistosos del día."),
@@ -1250,7 +1222,6 @@ class LeagueCog(commands.Cog):
             general_field = "\n".join([f"**`/{cmd}`** - {desc}" for cmd, desc in general_commands])
             embed.add_field(name="📋 General", value=general_field or "Ningún comando disponible.", inline=False)
 
-            # Comandos de Manager
             manager_commands = [
                 ("fichajes", "Ver los últimos fichajes realizados en la liga."),
                 ("agregarmercado", "Marcar a un jugador como transferible y opcionalmente modificar su cláusula."),
@@ -1265,7 +1236,6 @@ class LeagueCog(commands.Cog):
             manager_field = "\n".join([f"**`/{cmd}`** - {desc}" for cmd, desc in manager_commands])
             embed.add_field(name="⚽ Manager", value=manager_field or "Ningún comando disponible.", inline=False)
 
-            # Comandos de Admin
             admin_commands = [
                 ("open_market", "Abre el mercado de transferencias."),
                 ("close_market", "Cierra el mercado de transferencias."),
@@ -1273,7 +1243,7 @@ class LeagueCog(commands.Cog):
                 ("check_market", "Verifica el estado del mercado."),
                 ("ss", "Ver historial de capturas validadas."),
                 ("crearequipo", "Crear un equipo nuevo con división."),
-                ("creartabla", "Generar la tabla diaria de amistosos."),  # Corrected name
+                ("creartabla", "Generar la tabla diaria de amistosos."),
                 ("asignarmanager", "Asignar un manager a un equipo."),
                 ("agregarcapitan", "Agregar un capitán a un equipo."),
                 ("quitarcapitan", "Quitar un capitán a un equipo."),
@@ -1306,7 +1276,6 @@ class LeagueCog(commands.Cog):
                     inline=False
                 )
 
-            # Check embed size
             total_length = sum(len(field.value) for field in embed.fields) + len(embed.description) + len(embed.title)
             if total_length > 6000:
                 await interaction.response.send_message(
@@ -1324,19 +1293,6 @@ class LeagueCog(commands.Cog):
                 embed=error(f"Error al mostrar la ayuda: {str(e)}"),
                 ephemeral=True
             )
-
-
-async def sync(self, interaction: discord.Interaction):
-    if interaction.user.id == 509812954426769418:
-        try:
-            synced = await self.bot.tree.sync()  # Se elimina el segundo 'await'
-            await interaction.response.send_message(f"Sincronizados {len(synced)} comando(s) globalmente!", ephemeral=True)
-            logger.info(f"Synced {len(synced)} command(s) globally")
-        except Exception as e:
-            await interaction.response.send_message(f"Error al sincronizar: {e}", ephemeral=True)
-            logger.error(f"Failed to sync commands: {e}")
-    else:
-        await interaction.response.send_message("¡Solo el dueño del bot puede usar este comando!", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(LeagueCog(bot))

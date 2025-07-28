@@ -20,6 +20,7 @@ from discord import SelectOption
 from discord.interactions import Interaction
 import discord
 from discord import Embed, Color
+import sqlite3
 
 logger = logging.getLogger('bot')
 
@@ -460,10 +461,22 @@ class LeagueCog(commands.Cog):
             await message.reply(embed=error("Por favor, envía una imagen en formato PNG o JPG."))
             return
 
-        player = db.get_player_by_id(message.guild.id, message.author.id)
+        guild_id = message.guild.id
+        user_id = message.author.id
+        player = db.get_player_by_id(guild_id, user_id)
+
         if not player:
-            await message.reply(embed=error("No estás registrado como jugador. Contacta a un admin."))
-            return
+            team = db.get_team_by_manager(guild_id, user_id)
+            if team:
+                db_path = db.get_db_path(guild_id)
+                with sqlite3.connect(db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
+                    cur.execute('SELECT * FROM players WHERE team_id = ? AND user_id = ?', (team['id'], user_id))
+                    player = cur.fetchone()
+
+        if not player:
+            return  # no es jugador 
 
         try:
             response = requests.get(attachment.url)
@@ -901,9 +914,13 @@ class LeagueCog(commands.Cog):
         embed.description = "\n".join(history) or "Sin historial."
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="pagaclausula", description="Pagar la cláusula de un jugador")
-    @app_commands.describe(jugador="Jugador objetivo")
-    async def pagaclausula(self, interaction: discord.Interaction, jugador: discord.User):
+    @app_commands.command(name="pagarclausula", description="Paga la cláusula de rescisión de un jugador y envía la oferta con duración y nueva cláusula.")
+    @app_commands.describe(
+        jugador="Nombre exacto del jugador",
+        duracion="Duración del contrato en meses",
+        clausula="Nueva cláusula del jugador tras ficharlo"
+    )
+    async def pagarclausula(self, interaction: discord.Interaction, jugador: discord.User, duracion: int, clausula: int):
         if await check_ban(interaction, jugador.id, interaction.guild.id):
             return
         manager_team = db.get_team_by_manager(
@@ -919,13 +936,25 @@ class LeagueCog(commands.Cog):
             await interaction.response.send_message(embed=error("El jugador ya está en tu equipo."), ephemeral=True)
             return
         offer_id = db.pay_clause_and_transfer(
-            interaction.guild.id, player['name'], manager_team['id'], player['release_clause'], interaction.user.id)
+            guild_id=interaction.guild.id,
+            player_name=player['name'],
+            to_team_id=manager_team['id'],
+            price=player['release_clause'],
+            manager_id=interaction.user.id,
+            duration=duracion,
+            new_clause=clausula
+        )
         if offer_id == -1:
             await interaction.response.send_message(embed=error("Fondos insuficientes."), ephemeral=True)
             return
         view = OfferView(offer_id, interaction.user.id, interaction.guild.id, is_clause_payment=True)
         try:
-            await jugador.send(embed=info(f"Oferta por cláusula de {format_tag(interaction.user)}:\n**Cláusula:** {player['release_clause']:,}\nID: {offer_id}"), view=view)
+            await jugador.send(embed=info(
+            f"Te han comprado por cláusula.\n"
+            f"Manager: {format_tag(interaction.user)}\n"
+            f"Duración del nuevo contrato: **{duracion} meses**\n"
+            f"Nueva cláusula: **{clausula:,}**"
+        ), view=view)
             await interaction.response.send_message(embed=success(f"Oferta por cláusula enviada a {jugador.name}."), ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message(embed=error("No puedo enviar DM al jugador."), ephemeral=True)
@@ -1016,6 +1045,31 @@ class LeagueCog(commands.Cog):
             await interaction.followup.send(embed=success(f"Solicitud enviada, pero no se pudo notificar a: {', '.join(failed_dms)}."), ephemeral=True)
         else:
             await interaction.followup.send(embed=success("Solicitud de amistoso enviada."), ephemeral=True)
+
+    @app_commands.command(name="quitarmanager", description="Quitar el manager de un equipo")
+    @app_commands.describe(equipo="Nombre del equipo")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def quitarmanager(self, interaction: discord.Interaction, equipo: str):
+        # Obtener el equipo por nombre
+        team = db.get_team_by_name(interaction.guild.id, equipo)
+        if not team:
+            await interaction.response.send_message(embed=error("Equipo no encontrado."), ephemeral=True)
+            return
+
+        # Verificar si el equipo tiene un manager asignado
+        if team['manager_id'] is None:
+            await interaction.response.send_message(embed=error("El equipo no tiene un manager asignado."), ephemeral=True)
+            return
+
+        # Quitar el manager asignando NULL al manager_id
+        db.assign_manager_to_team(interaction.guild.id, team['id'], None)
+
+        # Obtener el nombre del usuario que era manager (si está disponible)
+        manager = self.bot.get_user(team['manager_id']) if team['manager_id'] else None
+        manager_name = manager.name if manager else "Desconocido"
+
+        # Enviar mensaje de éxito
+        await interaction.response.send_message(embed=success(f"{manager_name} ha sido removido como manager de {equipo}."), ephemeral=True)
 
     @app_commands.command(name="sancionar", description="Sancionar a un jugador")
     @app_commands.describe(jugador="Jugador objetivo")

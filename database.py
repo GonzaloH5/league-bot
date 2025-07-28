@@ -29,19 +29,18 @@ def create_tables(guild_id: int):
                 division TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS players (
-                user_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
+                name TEXT PRIMARY KEY,
+                user_id INTEGER UNIQUE,
                 team_id INTEGER,
                 transferable INTEGER DEFAULT 0,
                 banned INTEGER DEFAULT 0,
                 contract_duration INTEGER,
                 release_clause INTEGER,
-                original_release_clause INTEGER,
-                FOREIGN KEY(team_id) REFERENCES teams(id)
+                original_release_clause INTEGER
             );
             CREATE TABLE IF NOT EXISTS transfer_offers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                player_id INTEGER NOT NULL,
+                player_name TEXT NOT NULL,
                 from_team_id INTEGER,
                 to_team_id INTEGER,
                 from_manager_id INTEGER,
@@ -50,7 +49,7 @@ def create_tables(guild_id: int):
                 status TEXT NOT NULL DEFAULT 'pending',
                 contract_duration INTEGER,
                 release_clause INTEGER,
-                FOREIGN KEY(player_id) REFERENCES players(user_id),
+                FOREIGN KEY(player_name) REFERENCES players(name),
                 FOREIGN KEY(from_team_id) REFERENCES teams(id),
                 FOREIGN KEY(to_team_id) REFERENCES teams(id)
             );
@@ -238,7 +237,7 @@ def get_server_config(guild_id: int) -> dict:
     except sqlite3.Error as e:
         database_logger.error(f"Error al obtener configuración del servidor para guild {guild_id}: {e}")
         return None
-
+        
 def reset_transferable_status(guild_id: int):
     db_path = get_db_path(guild_id)
     try:
@@ -363,12 +362,17 @@ def add_player(guild_id: int, name: str, user_id: int, team_id: int = None) -> b
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
-            cur.execute('INSERT INTO players(user_id, name, team_id) VALUES (?, ?, ?)', (user_id, name, team_id))
+            # Verificar si el user_id ya existe
+            cur.execute('SELECT name FROM players WHERE user_id = ?', (user_id,))
+            if cur.fetchone():
+                database_logger.warning(f"Intento de registrar user_id duplicado: {user_id} en guild {guild_id}")
+                return False
+            cur.execute('INSERT INTO players(name, user_id, team_id) VALUES (?, ?, ?)', (name, user_id, team_id))
             conn.commit()
             database_logger.info(f"Jugador {name} (ID: {user_id}) agregado en guild {guild_id}.")
-        return True
+            return True
     except sqlite3.IntegrityError:
-        database_logger.warning(f"Intento de agregar jugador duplicado con ID {user_id} en guild {guild_id}")
+        database_logger.warning(f"Intento de agregar jugador duplicado: {name} en guild {guild_id}")
         return False
 
 def get_player_by_id(guild_id: int, user_id: int) -> dict:
@@ -383,41 +387,41 @@ def get_player_by_id(guild_id: int, user_id: int) -> dict:
         database_logger.error(f"Error al obtener jugador por ID {user_id} en guild {guild_id}: {e}")
         return None
 
-def ban_player(guild_id: int, user_id: int):
+def ban_player(guild_id: int, name: str):
     db_path = get_db_path(guild_id)
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
-            cur.execute('UPDATE players SET banned = 1 WHERE user_id = ?', (user_id,))
+            cur.execute('UPDATE players SET banned = 1 WHERE name = ?', (name,))
             conn.commit()
-            database_logger.info(f"Jugador con ID {user_id} baneado en guild {guild_id}.")
+            database_logger.info(f"Jugador {name} baneado en guild {guild_id}.")
     except sqlite3.Error as e:
-        database_logger.error(f"Error al banear jugador con ID {user_id} en guild {guild_id}: {e}")
+        database_logger.error(f"Error al banear jugador {name} en guild {guild_id}: {e}")
 
-def unban_player(guild_id: int, user_id: int):
+def unban_player(guild_id: int, name: str):
     db_path = get_db_path(guild_id)
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
-            cur.execute('UPDATE players SET banned = 0 WHERE user_id = ?', (user_id,))
+            cur.execute('UPDATE players SET banned = 0 WHERE name = ?', (name,))
             conn.commit()
-            database_logger.info(f"Jugador con ID {user_id} desbaneado en guild {guild_id}.")
+            database_logger.info(f"Jugador {name} desbaneado en guild {guild_id}.")
     except sqlite3.Error as e:
-        database_logger.error(f"Error al desbanear jugador con ID {user_id} en guild {guild_id}: {e}")
+        database_logger.error(f"Error al desbanear jugador {name} en guild {guild_id}: {e}")
 
-def remove_player_from_team(guild_id: int, user_id: int) -> bool:
+def remove_player_from_team(guild_id: int, player_name: str) -> bool:
     db_path = get_db_path(guild_id)
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
-            cur.execute('UPDATE players SET team_id = NULL, contract_duration = NULL, release_clause = NULL, transferable = 0 WHERE user_id = ?', (user_id,))
+            cur.execute('UPDATE players SET team_id = NULL, contract_duration = NULL, release_clause = NULL, transferable = 0 WHERE name = ?', (player_name,))
             if cur.rowcount > 0:
                 conn.commit()
-                database_logger.info(f"Jugador con ID {user_id} removido de su equipo en guild {guild_id}.")
+                database_logger.info(f"Jugador {player_name} removido de su equipo en guild {guild_id}.")
                 return True
             return False
     except sqlite3.Error as e:
-        database_logger.error(f"Error al quitar jugador con ID {user_id} del equipo en guild {guild_id}: {e}")
+        database_logger.error(f"Error al quitar jugador {player_name} del equipo en guild {guild_id}: {e}")
         return False
 
 def get_transferable_players(guild_id: int) -> list:
@@ -427,83 +431,82 @@ def get_transferable_players(guild_id: int) -> list:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute('''
-                SELECT p.user_id, p.name, p.team_id, p.release_clause 
+                SELECT p.name, p.team_id, p.release_clause 
                 FROM players p
                 LEFT JOIN teams t ON p.user_id = t.manager_id
                 WHERE p.transferable = 1 AND t.manager_id IS NULL
             ''')
             rows = cur.fetchall()
-        return [{'user_id': r['user_id'], 'name': r['name'], 'team_id': r['team_id'], 'release_clause': r['release_clause']} for r in rows]
-    except sqlite3.Error as e:
+        return [{'name': r['name'], 'team_id': r['team_id'], 'release_clause': r['release_clause']} for r in rows]
+    except ctypes3.Error as e:
         database_logger.error(f"Error al obtener jugadores transferibles en guild {guild_id}: {e}")
         return []
 
-def set_player_transferable(guild_id: int, user_id: int, new_clause: int = None) -> bool:
+def set_player_transferable(guild_id: int, player_name: str, new_clause: int = None) -> bool:
     db_path = get_db_path(guild_id)
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
             if new_clause is not None:
-                cur.execute('SELECT release_clause FROM players WHERE user_id = ?', (user_id,))
+                cur.execute('SELECT release_clause FROM players WHERE name = ?', (player_name,))
                 current_clause = cur.fetchone()
                 original_clause = current_clause[0] if current_clause else None
-                cur.execute('UPDATE players SET transferable = 1, release_clause = ?, original_release_clause = ? WHERE user_id = ?', 
-                           (new_clause, original_clause, user_id))
+                cur.execute('UPDATE players SET transferable = 1, release_clause = ?, original_release_clause = ? WHERE name = ?', 
+                           (new_clause, original_clause, player_name))
             else:
-                cur.execute('UPDATE players SET transferable = 1 WHERE user_id = ?', (user_id,))
+                cur.execute('UPDATE players SET transferable = 1 WHERE name = ?', (player_name,))
             if cur.rowcount > 0:
                 conn.commit()
-                database_logger.info(f"Jugador con ID {user_id} marcado como transferible con cláusula {new_clause if new_clause else 'sin cambios'} en guild {guild_id}.")
+                database_logger.info(f"Jugador {player_name} marcado como transferible con cláusula {new_clause if new_clause else 'sin cambios'} en guild {guild_id}.")
                 return True
             return False
     except sqlite3.Error as e:
-        database_logger.error(f"Error al marcar jugador con ID {user_id} como transferible en guild {guild_id}: {e}")
+        database_logger.error(f"Error al marcar jugador {player_name} como transferible en guild {guild_id}: {e}")
         return False
 
-def unset_player_transferable(guild_id: int, user_id: int) -> bool:
+def unset_player_transferable(guild_id: int, player_name: str) -> bool:
     db_path = get_db_path(guild_id)
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
-            cur.execute('SELECT original_release_clause FROM players WHERE user_id = ?', (user_id,))
+            cur.execute('SELECT original_release_clause FROM players WHERE name = ?', (player_name,))
             original_clause = cur.fetchone()
             if original_clause and original_clause[0] is not None:
-                cur.execute('UPDATE players SET transferable = 0, release_clause = ?, original_release_clause = NULL WHERE user_id = ?', 
-                           (original_clause[0], user_id))
+                cur.execute('UPDATE players SET transferable = 0, release_clause = ?, original_release_clause = NULL WHERE name = ?', 
+                           (original_clause[0], player_name))
             else:
-                cur.execute('UPDATE players SET transferable = 0 WHERE user_id = ?', (user_id,))
+                cur.execute('UPDATE players SET transferable = 0 WHERE name = ?', (player_name,))
             if cur.rowcount > 0:
                 conn.commit()
-                database_logger.info(f"Jugador con ID {user_id} removido de transferibles en guild {guild_id}.")
+                database_logger.info(f"Jugador {player_name} removido de transferibles en guild {guild_id}.")
                 return True
             return False
     except sqlite3.Error as e:
-        database_logger.error(f"Error al quitar estado transferible a jugador con ID {user_id} en guild {guild_id}: {e}")
+        database_logger.error(f"Error al quitar estado transferible a {player_name} en guild {guild_id}: {e}")
         return False
 
-def create_transfer_offer(guild_id: int, player_id: int, from_team_id: int, to_team_id: int, from_manager_id: int, clause: int, duration: int, price: int) -> int:
+def create_transfer_offer(guild_id: int, player_name: str, from_team_id: int, to_team_id: int, from_manager_id: int, clause: int, duration: int, price: int) -> int:
     if get_market_status(guild_id) != 'open':
-        database_logger.warning(f"Mercado cerrado en guild {guild_id}. No se puede crear oferta.")
         return -2
     db_path = get_db_path(guild_id)
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
-            # Verificar que el jugador exista
-            cur.execute('SELECT 1 FROM players WHERE user_id = ?', (player_id,))
+            # Verificar si el jugador existe
+            cur.execute('SELECT name FROM players WHERE name = ?', (player_name,))
             if not cur.fetchone():
-                database_logger.error(f"Jugador con ID {player_id} no encontrado en guild {guild_id}.")
-                return -3
+                database_logger.error(f"Intento de crear oferta para jugador inexistente: {player_name} en guild {guild_id}")
+                return -1
             cur.execute('''
-                INSERT INTO transfer_offers (player_id, from_team_id, to_team_id, from_manager_id, price, status, contract_duration, release_clause)
+                INSERT INTO transfer_offers (player_name, from_team_id, to_team_id, from_manager_id, price, status, contract_duration, release_clause)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (player_id, from_team_id, to_team_id, from_manager_id, price, 'pending', duration, clause))
+            ''', (player_name, from_team_id, to_team_id, from_manager_id, price, 'pending', duration, clause))
             offer_id = cur.lastrowid
             conn.commit()
-            database_logger.info(f"Oferta de transferencia {offer_id} creada para jugador con ID {player_id} en guild {guild_id}.")
+            database_logger.info(f"Oferta de transferencia {offer_id} creada para {player_name} en guild {guild_id}.")
             return offer_id
     except sqlite3.Error as e:
-        database_logger.error(f"Error al crear oferta de transferencia para jugador con ID {player_id} en guild {guild_id}: {e}")
+        database_logger.error(f"Error al crear oferta de transferencia para {player_name} en guild {guild_id}: {e}")
         return -1
 
 def get_offer(guild_id: int, offer_id: int) -> dict:
@@ -541,24 +544,21 @@ def accept_offer(guild_id: int, offer_id: int) -> bool:
             cur.execute('SELECT * FROM transfer_offers WHERE id = ?', (offer_id,))
             offer = cur.fetchone()
             if not offer or offer['status'] != 'pending':
-                database_logger.warning(f"Oferta {offer_id} no válida o no está pendiente en guild {guild_id}.")
                 return False
-            player = get_player_by_id(guild_id, offer['player_id'])
+            player = get_player_by_id(guild_id, offer['player_name'])
             if not player:
-                database_logger.error(f"Jugador con ID {offer['player_id']} no encontrado para oferta {offer_id} en guild {guild_id}.")
                 return False
             from_team_id = offer['from_team_id']
             to_team_id = offer['to_team_id']
             cur.execute('SELECT balance FROM club_balance WHERE team_id = ?', (to_team_id,))
             balance = cur.fetchone()
             if not balance or balance['balance'] < offer['price']:
-                database_logger.warning(f"Fondos insuficientes para oferta {offer_id} en guild {guild_id}.")
                 return False
             cur.execute('UPDATE club_balance SET balance = balance - ? WHERE team_id = ?', (offer['price'], to_team_id))
             if from_team_id:
                 cur.execute('UPDATE club_balance SET balance = balance + ? WHERE team_id = ?', (offer['price'], from_team_id))
-            cur.execute('UPDATE players SET team_id = ?, contract_duration = ?, release_clause = ? WHERE user_id = ?', 
-                       (to_team_id, offer['contract_duration'], offer['release_clause'], offer['player_id']))
+            cur.execute('UPDATE players SET team_id = ?, contract_duration = ?, release_clause = ? WHERE name = ?', 
+                       (to_team_id, offer['contract_duration'], offer['release_clause'], offer['player_name']))
             cur.execute('UPDATE transfer_offers SET status = ? WHERE id = ?', ('accepted', offer_id))
             conn.commit()
             database_logger.info(f"Oferta {offer_id} aceptada en guild {guild_id}.")
@@ -576,7 +576,7 @@ def list_offers_by_manager(guild_id: int, manager_id: int, status: str) -> list:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-            cur.execute('SELECT t.*, p.name FROM transfer_offers t JOIN players p ON t.player_id = p.user_id WHERE from_manager_id = ? AND status = ?', (manager_id, status))
+            cur.execute('SELECT * FROM transfer_offers WHERE from_manager_id = ? AND status = ?', (manager_id, status))
             return [dict(row) for row in cur.fetchall()]
     except sqlite3.Error as e:
         database_logger.error(f"Error al listar ofertas por manager {manager_id} en guild {guild_id}: {e}")
@@ -588,7 +588,11 @@ def list_offers_for_player(guild_id: int, user_id: int, status: str) -> list:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-            cur.execute('SELECT t.*, p.name FROM transfer_offers t JOIN players p ON t.player_id = p.user_id WHERE p.user_id = ? AND t.status = ?', (user_id, status))
+            cur.execute('''
+                SELECT t.* FROM transfer_offers t
+                JOIN players p ON t.player_name = p.name
+                WHERE p.user_id = ? AND t.status = ?
+            ''', (user_id, status))
             return [dict(row) for row in cur.fetchall()]
     except sqlite3.Error as e:
         database_logger.error(f"Error al listar ofertas para jugador {user_id} en guild {guild_id}: {e}")
@@ -600,43 +604,44 @@ def has_pending_offer(guild_id: int, manager_id: int, user_id: int) -> bool:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-            cur.execute('SELECT 1 FROM transfer_offers WHERE from_manager_id = ? AND player_id = ? AND status IN ("pending", "bought_clause")', (manager_id, user_id))
+            cur.execute('''
+                SELECT 1 FROM transfer_offers t
+                JOIN players p ON t.player_name = p.name
+                WHERE t.from_manager_id = ? AND p.user_id = ? AND t.status IN ('pending', 'bought_clause')
+            ''', (manager_id, user_id))
             return cur.fetchone() is not None
     except sqlite3.Error as e:
         database_logger.error(f"Error al verificar oferta pendiente para manager {manager_id} y jugador {user_id} en guild {guild_id}: {e}")
         return False
 
-def pay_clause_and_transfer(guild_id: int, player_id: int, to_team_id: int, price: int, manager_id: int) -> int:
+def pay_clause_and_transfer(guild_id: int, player_name: str, to_team_id: int, price: int, manager_id: int) -> int:
     if get_market_status(guild_id) != 'open':
-        database_logger.warning(f"Mercado cerrado en guild {guild_id}. No se puede pagar cláusula.")
         return -2
     db_path = get_db_path(guild_id)
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-            cur.execute('SELECT * FROM players WHERE user_id = ?', (player_id,))
+            cur.execute('SELECT * FROM players WHERE name = ?', (player_name,))
             player = cur.fetchone()
             if not player:
-                database_logger.error(f"Jugador con ID {player_id} no encontrado en guild {guild_id}.")
                 return -1
             from_team_id = player['team_id']
             cur.execute('SELECT balance FROM club_balance WHERE team_id = ?', (to_team_id,))
             balance = cur.fetchone()
             if not balance or balance['balance'] < price:
-                database_logger.warning(f"Fondos insuficientes para pagar cláusula de jugador con ID {player_id} en guild {guild_id}.")
                 return -1
             cur.execute('UPDATE club_balance SET balance = balance - ? WHERE team_id = ?', (price, to_team_id))
             if from_team_id:
                 cur.execute('UPDATE club_balance SET balance = balance + ? WHERE team_id = ?', (price, from_team_id))
-            cur.execute('INSERT INTO transfer_offers (player_id, from_team_id, to_team_id, from_manager_id, price, status, release_clause) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                       (player_id, from_team_id, to_team_id, manager_id, price, 'bought_clause', price))
+            cur.execute('INSERT INTO transfer_offers (player_name, from_team_id, to_team_id, from_manager_id, price, status, release_clause) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                       (player_name, from_team_id, to_team_id, manager_id, price, 'bought_clause', price))
             offer_id = cur.lastrowid
             conn.commit()
-            database_logger.info(f"Oferta por cláusula {offer_id} creada para jugador con ID {player_id} en guild {guild_id}.")
+            database_logger.info(f"Oferta por cláusula {offer_id} creada para {player_name} en guild {guild_id}.")
             return offer_id
     except sqlite3.Error as e:
-        database_logger.error(f"Error al pagar cláusula para jugador con ID {player_id} en guild {guild_id}: {e}")
+        database_logger.error(f"Error al pagar cláusula para {player_name} en guild {guild_id}: {e}")
         return -1
 
 def accept_clause_payment(guild_id: int, offer_id: int) -> bool:
@@ -648,14 +653,12 @@ def accept_clause_payment(guild_id: int, offer_id: int) -> bool:
             cur.execute('SELECT * FROM transfer_offers WHERE id = ?', (offer_id,))
             offer = cur.fetchone()
             if not offer or offer['status'] != 'bought_clause':
-                database_logger.warning(f"Oferta {offer_id} no válida o no está en estado 'bought_clause' en guild {guild_id}.")
                 return False
-            player = get_player_by_id(guild_id, offer['player_id'])
+            player = get_player_by_id(guild_id, offer['player_name'])
             if not player:
-                database_logger.error(f"Jugador con ID {offer['player_id']} no encontrado para oferta {offer_id} en guild {guild_id}.")
                 return False
-            cur.execute('UPDATE players SET team_id = ?, contract_duration = NULL, release_clause = ? WHERE user_id = ?', 
-                       (offer['to_team_id'], offer['release_clause'], offer['player_id']))
+            cur.execute('UPDATE players SET team_id = ?, contract_duration = NULL, release_clause = ? WHERE name = ?', 
+                       (offer['to_team_id'], offer['release_clause'], offer['player_name']))
             cur.execute('UPDATE transfer_offers SET status = ? WHERE id = ?', ('accepted', offer_id))
             conn.commit()
             database_logger.info(f"Pago de cláusula {offer_id} aceptado en guild {guild_id}.")
@@ -807,7 +810,6 @@ def update_solicitud_status(guild_id: int, solicitud_id: int, status: str, user_
             cur = conn.cursor()
             cur.execute('UPDATE solicitudes_amistosos SET status = ? WHERE id = ?', (status, solicitud_id))
             conn.commit()
-            Daiquiri - Mensajes directos están desactivados para este usuario.
             database_logger.info(f"Solicitud {solicitud_id} actualizada a estado {status} en guild {guild_id}")
     except sqlite3.Error as e:
         database_logger.error(f"Error al actualizar solicitud {solicitud_id} en guild {guild_id}: {e}")
@@ -836,24 +838,23 @@ def advance_season(guild_id: int):
     except sqlite3.Error as e:
         database_logger.error(f"Error al avanzar temporada en guild {guild_id}: {e}")
 
-def get_transfer_history_by_player(guild_id: int, user_id: int) -> list:
+def get_transfer_history_by_player(guild_id: int, player_name: str) -> list:
     db_path = get_db_path(guild_id)
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute('''
-                SELECT t.id, t.player_id, t.price, t.status, t1.name AS from_team_name, t2.name AS to_team_name, p.name AS player_name
+                SELECT t.id, t.player_name, t.price, t.status, t1.name AS from_team_name, t2.name AS to_team_name
                 FROM transfer_offers t
-                JOIN players p ON t.player_id = p.user_id
                 LEFT JOIN teams t1 ON t.from_team_id = t1.id
                 LEFT JOIN teams t2 ON t.to_team_id = t2.id
-                WHERE t.player_id = ? AND t.status IN ('accepted', 'finalized')
-            ''', (user_id,))
+                WHERE t.player_name = ? AND t.status IN ('accepted', 'finalized')
+            ''', (player_name,))
             return [f"ID {row['id']}: {row['player_name']} de {row['from_team_name'] or 'Libre'} a {row['to_team_name'] or 'Libre'} por {row['price']:,} [{row['status']}]" 
                    for row in cur.fetchall()]
     except sqlite3.Error as e:
-        database_logger.error(f"Error al obtener historial de transferencias para jugador con ID {user_id} en guild {guild_id}: {e}")
+        database_logger.error(f"Error al obtener historial de transferencias para {player_name} en guild {guild_id}: {e}")
         return []
 
 def get_transfer_history_by_team(guild_id: int, team_id: int) -> list:
@@ -863,9 +864,8 @@ def get_transfer_history_by_team(guild_id: int, team_id: int) -> list:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute('''
-                SELECT t.id, t.player_id, t.price, t.status, t1.name AS from_team_name, t2.name AS to_team_name, p.name AS player_name
+                SELECT t.id, t.player_name, t.price, t.status, t1.name AS from_team_name, t2.name AS to_team_name
                 FROM transfer_offers t
-                JOIN players p ON t.player_id = p.user_id
                 LEFT JOIN teams t1 ON t.from_team_id = t1.id
                 LEFT JOIN teams t2 ON t.to_team_id = t2.id
                 WHERE (t.from_team_id = ? OR t.to_team_id = ?) AND t.status IN ('accepted', 'finalized')
@@ -883,9 +883,8 @@ def get_recent_transfers(guild_id: int, limit: int) -> list:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute('''
-                SELECT t.id, t.player_id, t.price, t.status, t1.name AS from_team_name, t2.name AS to_team_name, p.name AS player_name
+                SELECT t.id, t.player_name, t.price, t.status, t1.name AS from_team_name, t2.name AS to_team_name
                 FROM transfer_offers t
-                JOIN players p ON t.player_id = p.user_id
                 LEFT JOIN teams t1 ON t.from_team_id = t1.id
                 LEFT JOIN teams t2 ON t.to_team_id = t2.id
                 WHERE t.status IN ('accepted', 'finalized')
@@ -918,7 +917,8 @@ def add_screenshot(guild_id: int, user_id: int, nicktag: str, discord_name: str,
 def update_screenshot_status(guild_id: int, screenshot_id: int, status: str):
     db_path = get_db_path(guild_id)
     try:
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(db_path) as conn
+
             cur = conn.cursor()
             cur.execute('UPDATE screenshots SET status = ? WHERE id = ?', (status, screenshot_id))
             conn.commit()
@@ -979,7 +979,7 @@ def export_database_to_file(guild_id: int = None):
                     players = cur.fetchall()
                     if players:
                         for player in players:
-                            f.write(f"User ID: {player['user_id']}, Name: {player['name']}, Team ID: {player['team_id'] or 'None'}, "
+                            f.write(f"Name: {player['name']}, User ID: {player['user_id']}, Team ID: {player['team_id'] or 'None'}, "
                                    f"Transferable: {player['transferable']}, Banned: {player['banned']}, "
                                    f"Contract Duration: {player['contract_duration'] or 'None'}, "
                                    f"Release Clause: {player['release_clause'] or 'None'}, "
@@ -989,14 +989,14 @@ def export_database_to_file(guild_id: int = None):
                     f.write("\n")
                     
                     f.write("=== Tabla 'transfer_offers' ===\n")
-                    cur.execute('SELECT t.*, p.name AS player_name FROM transfer_offers t JOIN players p ON t.player_id = p.user_id')
+                    cur.execute('SELECT * FROM transfer_offers')
                     offers = cur.fetchall()
                     if offers:
                         for offer in offers:
-                            f.write(f"ID: {offer['id']}, Player ID: {offer['player_id']}, Player Name: {offer['player_name']}, "
-                                   f"From Team ID: {offer['from_team_id'] or 'None'}, To Team ID: {offer['to_team_id'] or 'None'}, "
-                                   f"From Manager ID: {offer['from_manager_id'] or 'None'}, To Manager ID: {offer['to_manager_id'] or 'None'}, "
-                                   f"Price: {offer['price']}, Status: {offer['status']}, Contract Duration: {offer['contract_duration'] or 'None'}, "
+                            f.write(f"ID: {offer['id']}, Player: {offer['player_name']}, From Team ID: {offer['from_team_id'] or 'None'}, "
+                                   f"To Team ID: {offer['to_team_id'] or 'None'}, From Manager ID: {offer['from_manager_id'] or 'None'}, "
+                                   f"To Manager ID: {offer['to_manager_id'] or 'None'}, Price: {offer['price']}, "
+                                   f"Status: {offer['status']}, Contract Duration: {offer['contract_duration'] or 'None'}, "
                                    f"Release Clause: {offer['release_clause'] or 'None'}\n")
                     else:
                         f.write("No hay ofertas de transferencia registradas.\n")
@@ -1037,9 +1037,8 @@ def export_database_to_file(guild_id: int = None):
                     server_configs = cur.fetchall()
                     if server_configs:
                         for config in server_configs:
-                            f.write(f"Guild ID: {config['guild_id']}, SS Channel IDs: {config['ss_channel_ids'] or 'None'}, "
-                                   f"Amistosos Channel ID: {config['amistosos_channel_id'] or 'None'}, Arbiter Role ID: {config['arbiter_role_id'] or 'None'}, "
-                                   f"Registro Channel ID: {config['registro_channel_id'] or 'None'}\n")
+                            f.write(f"Guild ID: {config['guild_id']}, SS Channel ID: {config['ss_channel_id'] or 'None'}, "
+                                   f"Amistosos Channel ID: {config['amistosos_channel_id'] or 'None'}, Arbiter Role ID: {config['arbiter_role_id'] or 'None'}\n")
                     else:
                         f.write("No hay configuraciones de servidor registradas.\n")
                     f.write("\n")
@@ -1056,33 +1055,13 @@ def export_database_to_file(guild_id: int = None):
                         f.write("No hay capturas registradas.\n")
                     f.write("\n")
                     
-                    f.write("=== Tabla 'amistosos_tablas' ===\n")
-                    cur.execute('SELECT * FROM amistosos_tablas')
-                    tablas = cur.fetchall()
-                    if tablas:
-                        for tabla in tablas:
-                            f.write(f"ID: {tabla['id']}, Guild ID: {tabla['guild_id']}, Created At: {tabla['created_at']}\n")
-                    else:
-                        f.write("No hay tablas de amistosos registradas.\n")
-                    f.write("\n")
-                    
-                    f.write("=== Tabla 'amistosos_horarios' ===\n")
-                    cur.execute('SELECT * FROM amistosos_horarios')
-                    horarios = cur.fetchall()
-                    if horarios:
-                        for horario in horarios:
-                            f.write(f"ID: {horario['id']}, Tabla ID: {horario['tabla_id']}, Horario: {horario['horario']}, Disponible: {horario['disponible']}\n")
-                    else:
-                        f.write("No hay horarios de amistosos registrados.\n")
-                    f.write("\n")
-                    
                     f.write("=== Tabla 'amistosos' ===\n")
                     cur.execute('SELECT * FROM amistosos')
                     amistosos = cur.fetchall()
                     if amistosos:
                         for amistoso in amistosos:
-                            f.write(f"ID: {amistoso['id']}, Tabla ID: {amistoso['tabla_id']}, Horario: {amistoso['horario']}, "
-                                   f"Team1 ID: {amistoso['team1_id']}, Team2 ID: {amistoso['team2_id']}, Status: {amistoso['status']}\n")
+                            f.write(f"ID: {amistoso['id']}, Team1 ID: {amistoso['team1_id']}, Team2 ID: {amistoso['team2_id']}, "
+                                   f"Hora: {amistoso['hora']}, Fecha: {amistoso['fecha']}, Status: {amistoso['status']}\n")
                     else:
                         f.write("No hay amistosos registrados.\n")
                     f.write("\n")
@@ -1092,9 +1071,9 @@ def export_database_to_file(guild_id: int = None):
                     solicitudes = cur.fetchall()
                     if solicitudes:
                         for solicitud in solicitudes:
-                            f.write(f"ID: {solicitud['id']}, Tabla ID: {solicitud['tabla_id']}, Horario: {solicitud['horario']}, "
-                                   f"Solicitante Team ID: {solicitud['solicitante_team_id']}, Solicitado Team ID: {solicitud['solicitado_team_id']}, "
-                                   f"Status: {solicitud['status']}\n")
+                            f.write(f"ID: {solicitud['id']}, Solicitante Team ID: {solicitud['solicitante_team_id']}, "
+                                   f"Solicitado Team ID: {solicitud['solicitado_team_id']}, Hora: {solicitud['hora']}, "
+                                   f"Fecha: {solicitud['fecha']}, Status: {solicitud['status']}\n")
                     else:
                         f.write("No hay solicitudes de amistosos registradas.\n")
                 
@@ -1111,7 +1090,7 @@ def export_database_to_file(guild_id: int = None):
                 database_logger.info(f"Base de datos exportada a {backup_file}.")
     except sqlite3.Error as e:
         database_logger.error(f"Error al exportar base de datos para guild {guild_id or 'global'}: {e}")
-
+        
 def generate_horarios(inicio: str, fin: str) -> list:
     try:
         inicio_dt = datetime.strptime(inicio, "%H:%M")
@@ -1145,7 +1124,7 @@ def set_registro_channel(guild_id: int, channel_id: int):
             database_logger.info(f"Canal de registros establecido a {channel_id} para guild {guild_id}")
     except sqlite3.Error as e:
         database_logger.error(f"Error al establecer canal de registros para guild {guild_id}: {e}")
-
+        
 def create_amistosos_tabla(guild_id: int, inicio: str, fin: str) -> int:
     horarios = generate_horarios(inicio, fin)
     if not horarios:

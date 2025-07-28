@@ -6,6 +6,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 import traceback
 from database import export_database_to_file, is_guild_banned, create_tables
+from Cogs.LeagueCog import OfferView, ConfirmAmistosoView
 
 load_dotenv()
 
@@ -189,3 +190,4 @@ if __name__ == '__main__':
         logger.error("DISCORD_BOT_TOKEN no está configurado.")
         raise RuntimeError("DISCORD_BOT_TOKEN no está configurado.")
     bot.run(BOT_TOKEN)
+

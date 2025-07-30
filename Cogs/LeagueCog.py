@@ -220,8 +220,15 @@ class TeamBookView(ui.View):
             embed.add_field(name="Capitanes", value=", ".join(
                 captain_mentions) or "Sin capitanes", inline=False)
             players = db.get_players_by_team(self.guild_id, team['id'])
-            embed.add_field(name="Jugadores", value="\n".join(
-                [f"{p['name']}: {p['contract_duration'] or 'Sin contrato'}" for p in players]) or "Ninguno", inline=False)
+            embed.add_field(
+                name="Jugadores",
+                value="\n".join([
+                    f"{p['name']}: {p['contract_duration'] or 'Sin contrato'} Temporada(s) | Cláusula: {p['release_clause']:,}" if p['release_clause'] else f"{p['name']}: {p['contract_duration'] or 'Sin contrato'} meses | Sin cláusula"
+                    for p in players
+                ]) or "Ninguno",
+                inline=False
+            )
+        
             embed.set_footer(
                 text=f"Página {self.current_page} de {len(self.teams)}")
             return embed

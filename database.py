@@ -488,26 +488,38 @@ def unset_player_transferable(guild_id: int, player_name: str) -> bool:
 def create_transfer_offer(guild_id: int, player_name: str, from_team_id: int, to_team_id: int, from_manager_id: int, clause: int, duration: int, price: int) -> int:
     if get_market_status(guild_id) != 'open':
         return -2
+    
+    # ✅ Verificar límite de cláusula
+    MAX_CLAUSE = 100_000_000
+    if clause > MAX_CLAUSE:
+        database_logger.warning(f"❌ Cláusula excede el máximo permitido: {clause} > {MAX_CLAUSE}")
+        return -3  # nuevo código de error para cláusula inválida
+
     db_path = get_db_path(guild_id)
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
+            
             # Verificar si el jugador existe
             cur.execute('SELECT name FROM players WHERE name = ?', (player_name,))
             if not cur.fetchone():
                 database_logger.error(f"Intento de crear oferta para jugador inexistente: {player_name} en guild {guild_id}")
                 return -1
+
             cur.execute('''
                 INSERT INTO transfer_offers (player_name, from_team_id, to_team_id, from_manager_id, price, status, contract_duration, release_clause)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (player_name, from_team_id, to_team_id, from_manager_id, price, 'pending', duration, clause))
+            
             offer_id = cur.lastrowid
             conn.commit()
             database_logger.info(f"Oferta de transferencia {offer_id} creada para {player_name} en guild {guild_id}.")
             return offer_id
+
     except sqlite3.Error as e:
         database_logger.error(f"Error al crear oferta de transferencia para {player_name} en guild {guild_id}: {e}")
         return -1
+
 
 def get_offer(guild_id: int, offer_id: int) -> dict:
     db_path = get_db_path(guild_id)
@@ -559,27 +571,26 @@ def accept_offer(guild_id: int, offer_id: int) -> bool:
             from_team_id = offer['from_team_id']
             to_team_id = offer['to_team_id']
 
-            if offer['from_team_id'] is not None:
+            # Solo verificar y mover dinero si el jugador no es agente libre
+            if from_team_id is not None:
+                # Verifica que el equipo comprador tenga fondos
                 cur.execute('SELECT balance FROM club_balance WHERE team_id = ?', (to_team_id,))
                 balance = cur.fetchone()
                 if not balance or balance['balance'] < offer['price']:
-                    database_logger.error(f"❌ Fondos insuficientes. Tiene {balance['balance']}, necesita {offer['price']}")
+                    database_logger.error(f"❌ Fondos insuficientes. Tiene {balance['balance'] if balance else 0}, necesita {offer['price']}")
                     return False
-            cur.execute(
-                'UPDATE players SET team_id = ?, contract_duration = ?, release_clause = ? WHERE name = ?',
-                (to_team_id, offer['contract_duration'], offer['release_clause'], offer['player_name'])
-            )
 
+                # Descontar y transferir dinero
+                cur.execute('UPDATE club_balance SET balance = balance - ? WHERE team_id = ?', (offer['price'], to_team_id))
+                cur.execute('UPDATE club_balance SET balance = balance + ? WHERE team_id = ?', (offer['price'], from_team_id))
+
+            # Actualizar jugador con nuevo equipo y contrato
+            cur.execute('UPDATE players SET team_id = ?, contract_duration = ?, release_clause = ? WHERE name = ?',
+                        (to_team_id, offer['contract_duration'], offer['release_clause'], offer['player_name']))
+
+            # Marcar la oferta como aceptada
             cur.execute('UPDATE transfer_offers SET status = ? WHERE id = ?', ('accepted', offer_id))
-            conn.commit()
 
-            cur.execute('UPDATE club_balance SET balance = balance - ? WHERE team_id = ?', (offer['price'], to_team_id))
-
-            if from_team_id:
-                cur.execute('UPDATE club_balance SET balance = balance + ? WHERE team_id = ?', (offer['price'], offer['from_team_id']))
-            cur.execute('UPDATE players SET team_id = ?, contract_duration = ?, release_clause = ? WHERE name = ?', 
-                       (to_team_id, offer['contract_duration'], offer['release_clause'], offer['player_name']))
-            cur.execute('UPDATE transfer_offers SET status = ? WHERE id = ?', ('accepted', offer_id))
             conn.commit()
             database_logger.info(f"Oferta {offer_id} aceptada en guild {guild_id}.")
             return True
